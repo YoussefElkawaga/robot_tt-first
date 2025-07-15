@@ -35,6 +35,44 @@ except ImportError:
     ELEVENLABS_CLIENT_AVAILABLE = True
     print("ElevenLabs client library installed successfully.")
 
+# Check for ffmpeg and install if needed
+try:
+    # Test if ffmpeg is available
+    import shutil
+    if shutil.which("ffmpeg") is None:
+        print("ffmpeg not found. Installing ffmpeg...")
+        if platform.system() == 'Windows':
+            try:
+                # Install ffmpeg via pip packages
+                print("Installing ffmpeg via pip...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "ffmpeg-python"])
+                
+                # Try to install ffmpeg binary using imageio[ffmpeg]
+                print("Installing ffmpeg binary using imageio...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "imageio[ffmpeg]"])
+                
+                # Alternative approach using imageio-ffmpeg
+                print("Installing imageio-ffmpeg for binary access...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "imageio-ffmpeg"])
+                
+                # Test if installation worked
+                import imageio_ffmpeg
+                print(f"ffmpeg binaries should be available at: {imageio_ffmpeg.get_ffmpeg_exe()}")
+            except Exception as e:
+                print(f"Failed to install ffmpeg automatically: {e}")
+                print("\nPlease install ffmpeg manually:")
+                print("1. Download from: https://ffmpeg.org/download.html")
+                print("2. Extract the files")
+                print("3. Add the bin folder to your system PATH")
+                print("4. Restart your terminal/IDE")
+        elif platform.system() == 'Darwin':  # macOS
+            print("Please install ffmpeg using brew: brew install ffmpeg")
+        else:  # Linux
+            print("Please install ffmpeg using your package manager, e.g., apt install ffmpeg")
+except Exception as e:
+    print(f"Error checking for ffmpeg: {e}")
+    print("Audio playback might not work without ffmpeg. Install it manually if needed.")
+
 # Set environment variables directly in code
 # This ensures the script works even if the .env file has issues
 os.environ["PORCUPINE_ACCESS_KEY"] = "NmPe6ZpjhI+7CuR5gR7DlZMHNFZZ5Jks2sqiINUl3yCCAF/QdCn51A=="
@@ -690,13 +728,10 @@ class ConversationRobot:
             return False
     
     def elevenlabs_tts(self, text, voice_id=None):
-        """Convert text to speech using ElevenLabs client library"""
-        if not self.elevenlabs_api_key:
-            print("ElevenLabs API key not set. Cannot generate speech.")
-            raise ValueError("ElevenLabs API key is required for TTS functionality")
-            
-        # Use specified voice_id or default
+        """Generate speech using ElevenLabs TTS API"""
+        # Use default voice ID if none provided
         voice_id = voice_id or self.elevenlabs_voice_id
+        
         if not voice_id:
             print("ElevenLabs voice ID not set. Cannot generate speech.")
             raise ValueError("ElevenLabs voice ID is required for TTS functionality")
@@ -704,46 +739,76 @@ class ConversationRobot:
         try:
             print(f"Generating speech with ElevenLabs client for text: {text[:50]}...")
             
-            # Create ElevenLabs client as shown in the documentation
+            # Create ElevenLabs client
             client = ElevenLabs(api_key=self.elevenlabs_api_key)
             
-            # Generate audio using the client directly
+            # Generate audio directly as mp3 bytes using the newer API method
             try:
-                # Use the client's text-to-speech method
-                audio_content = client.text_to_speech.convert(
+                # First try the direct method that returns bytes directly
+                audio_data = client.text_to_speech.generate(
                     text=text,
                     voice_id=voice_id,
                     model_id=self.elevenlabs_model_id,
                     voice_settings={
                         "stability": 0.5,
                         "similarity_boost": 0.5
-                    }
+                    },
+                    output_format="mp3"
                 )
                 
-                print("Successfully generated speech with ElevenLabs client")
-                return audio_content
+                # If this succeeds, audio_data should be bytes already
+                if isinstance(audio_data, bytes):
+                    print("Successfully generated speech with ElevenLabs client")
+                    return audio_data
                 
-            except Exception as api_error:
-                error_text = str(api_error)
-                print(f"Error generating speech with ElevenLabs: {error_text}")
+                # If we got here, we need to handle a different return type
+                print(f"Using alternative handling for response type: {type(audio_data)}")
                 
-                # Check if this is a permissions issue
-                if "missing_permissions" in error_text:
-                    print("\nNOTE: Your ElevenLabs API key doesn't have the required permissions.")
-                    if "text_to_speech" in error_text:
-                        print("Your API key needs the 'text_to_speech' permission to generate speech.")
-                    print("Please check your ElevenLabs subscription and API key settings.")
-                    raise ValueError(f"Failed to authenticate with ElevenLabs: {error_text}")
+            except (AttributeError, TypeError) as e:
+                print(f"Using alternative API method: {e}")
+                # Fall back to the streaming method
+                pass
                 
-                # Provide more helpful messages for common error codes
-                if "400" in error_text:
-                    print("This might be due to invalid input parameters or text content.")
-                elif "404" in error_text:
-                    print(f"Voice ID '{voice_id}' not found. Please check if the voice ID is correct.")
-                elif "429" in error_text:
-                    print("You've exceeded your API rate limit or quota. Please check your ElevenLabs subscription.")
+            # Fall back to the streaming method that returns a generator
+            audio_generator = client.text_to_speech.convert(
+                text=text,
+                voice_id=voice_id,
+                model_id=self.elevenlabs_model_id,
+                voice_settings={
+                    "stability": 0.5,
+                    "similarity_boost": 0.5
+                }
+            )
+            
+            # Convert the generator to bytes
+            audio_chunks = bytearray()
+            try:
+                # First try treating it as a regular generator
+                for chunk in audio_generator:
+                    if isinstance(chunk, bytes):
+                        audio_chunks.extend(chunk)
+                    else:
+                        # If it's not bytes, try to convert it
+                        audio_chunks.extend(bytes(chunk))
+            except TypeError:
+                # If audio_generator is not directly iterable, it might be a response object
+                # Try getting content or read() method
+                if hasattr(audio_generator, 'content'):
+                    audio_chunks.extend(audio_generator.content)
+                elif hasattr(audio_generator, 'read'):
+                    audio_chunks.extend(audio_generator.read())
+                elif hasattr(audio_generator, 'get_bytes'):
+                    audio_chunks.extend(audio_generator.get_bytes())
+                else:
+                    # As a last resort, try converting the entire object
+                    audio_chunks.extend(bytes(audio_generator))
+            
+            # Convert to bytes
+            audio_content = bytes(audio_chunks)
+            
+            print("Successfully generated speech with ElevenLabs client")
+            return audio_content
                 
-                raise ValueError(f"Failed to generate speech with ElevenLabs: {error_text}")
         except Exception as e:
             print(f"Exception generating speech with ElevenLabs: {e}")
             raise ValueError(f"Failed to generate speech with ElevenLabs: {e}")
@@ -751,16 +816,52 @@ class ConversationRobot:
     def play_audio(self, audio_data):
         """Play audio data with interrupt capability"""
         if not audio_data:
+            print("No audio data to play")
             return False
             
         try:
+            # Ensure audio_data is bytes
+            if not isinstance(audio_data, bytes):
+                print(f"Converting audio_data from {type(audio_data)} to bytes")
+                # Try different conversion methods depending on the type
+                if hasattr(audio_data, 'read'):
+                    audio_data = audio_data.read()
+                elif hasattr(audio_data, 'content'):
+                    audio_data = audio_data.content
+                elif isinstance(audio_data, (list, tuple)) and all(isinstance(x, bytes) for x in audio_data):
+                    # If it's a list/tuple of bytes, join them
+                    audio_data = b''.join(audio_data)
+                else:
+                    try:
+                        audio_data = bytes(audio_data)
+                    except:
+                        print("Could not convert audio_data to bytes")
+                        return False
+            
             # Create a temporary file to store the audio
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
                 temp_file.write(audio_data)
                 temp_file_path = temp_file.name
             
             # Load the audio file with pydub
-            audio = AudioSegment.from_mp3(temp_file_path)
+            try:
+                audio = AudioSegment.from_mp3(temp_file_path)
+            except Exception as e:
+                print(f"Failed to load MP3, trying as raw data: {e}")
+                # Try to handle raw audio data
+                with open(temp_file_path, 'rb') as f:
+                    raw_data = f.read()
+                # Save as WAV instead
+                wav_path = temp_file_path.replace('.mp3', '.wav')
+                with open(wav_path, 'wb') as f:
+                    f.write(raw_data)
+                try:
+                    audio = AudioSegment.from_file(wav_path)
+                    # Update temp_file_path to the new WAV file
+                    temp_file_path = wav_path
+                except Exception as e2:
+                    print(f"Still failed to load audio: {e2}")
+                    return False
             
             # Create a player thread
             def play_audio_thread():
@@ -801,6 +902,12 @@ class ConversationRobot:
             return True
         except Exception as e:
             print(f"Error setting up audio playback: {e}")
+            # Try to clean up any temporary files
+            try:
+                if 'temp_file_path' in locals():
+                    os.unlink(temp_file_path)
+            except:
+                pass
             return False
     
     def setup_wake_word_detection(self):
