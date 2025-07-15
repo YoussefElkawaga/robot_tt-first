@@ -23,6 +23,18 @@ import tempfile
 from pydub import AudioSegment
 from pydub.playback import play
 
+# Import ElevenLabs client
+try:
+    from elevenlabs.client import ElevenLabs
+    ELEVENLABS_CLIENT_AVAILABLE = True
+except ImportError:
+    print("ElevenLabs client library not found. Installing...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "elevenlabs"])
+    from elevenlabs.client import ElevenLabs
+    ELEVENLABS_CLIENT_AVAILABLE = True
+    print("ElevenLabs client library installed successfully.")
+
 # Set environment variables directly in code
 # This ensures the script works even if the .env file has issues
 os.environ["PORCUPINE_ACCESS_KEY"] = "NmPe6ZpjhI+7CuR5gR7DlZMHNFZZ5Jks2sqiINUl3yCCAF/QdCn51A=="
@@ -632,50 +644,42 @@ class ConversationRobot:
     
     
     def fetch_elevenlabs_voices(self):
-        """Fetch available voices from ElevenLabs API"""
+        """Fetch available voices from ElevenLabs API using the client library"""
         if not self.elevenlabs_api_key:
             print("ElevenLabs API key not set. Cannot fetch voices.")
             raise ValueError("ElevenLabs API key is required for TTS functionality")
             
         try:
-            url = "https://api.elevenlabs.io/v1/voices"
-            headers = {
-                "Accept": "application/json",
-                "xi-api-key": self.elevenlabs_api_key
-            }
+            print("Attempting to fetch voices from ElevenLabs using client library...")
             
-            print("Attempting to fetch voices from ElevenLabs...")
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                self.elevenlabs_voices = data.get("voices", [])
+            # Create ElevenLabs client as shown in the documentation
+            client = ElevenLabs(api_key=self.elevenlabs_api_key)
+            
+            # Get voices using the client
+            try:
+                # Use the client's voices API
+                voices_response = client.voices.get_all()
+                self.elevenlabs_voices = voices_response.voices
                 print(f"Fetched {len(self.elevenlabs_voices)} voices from ElevenLabs")
                 
                 # Print available voices
                 print("Available ElevenLabs voices:")
                 for voice in self.elevenlabs_voices:
-                    print(f"- {voice.get('name', 'Unknown')}: {voice.get('voice_id', 'Unknown')}")
+                    print(f"- {voice.name}: {voice.voice_id}")
                 
                 return True
-            elif response.status_code == 401:
-                # Handle authentication/permission errors gracefully
-                print(f"Warning: Unable to fetch ElevenLabs voices due to authentication or permission issues (401)")
-                print(f"Response: {response.text}")
+            except Exception as api_error:
+                error_text = str(api_error)
+                print(f"Warning: Unable to fetch ElevenLabs voices: {error_text}")
                 
                 # Check if this is specifically a permissions issue
-                if "missing_permissions" in response.text or "voices_read" in response.text:
+                if "missing_permissions" in error_text or "voices_read" in error_text:
                     print("\nNOTE: Your ElevenLabs API key doesn't have permission to list voices.")
                     print("This is normal for free tier accounts. You can still use text-to-speech with the default voice.")
                     print(f"Using default voice ID: {self.elevenlabs_voice_id}")
                 else:
                     print("Please check your API key and try again.")
                 
-                print("Continuing with default voice ID only...")
-                self.elevenlabs_voices = []
-                return False
-            else:
-                print(f"Warning: Error fetching ElevenLabs voices: {response.status_code}")
-                print(response.text)
                 print("Continuing with default voice ID only...")
                 self.elevenlabs_voices = []
                 return False
@@ -686,7 +690,7 @@ class ConversationRobot:
             return False
     
     def elevenlabs_tts(self, text, voice_id=None):
-        """Convert text to speech using ElevenLabs API"""
+        """Convert text to speech using ElevenLabs client library"""
         if not self.elevenlabs_api_key:
             print("ElevenLabs API key not set. Cannot generate speech.")
             raise ValueError("ElevenLabs API key is required for TTS functionality")
@@ -698,56 +702,48 @@ class ConversationRobot:
             raise ValueError("ElevenLabs voice ID is required for TTS functionality")
             
         try:
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+            print(f"Generating speech with ElevenLabs client for text: {text[:50]}...")
             
-            headers = {
-                "Accept": "audio/mpeg",
-                "Content-Type": "application/json",
-                "xi-api-key": self.elevenlabs_api_key
-            }
+            # Create ElevenLabs client as shown in the documentation
+            client = ElevenLabs(api_key=self.elevenlabs_api_key)
             
-            data = {
-                "text": text,
-                "model_id": self.elevenlabs_model_id,
-                "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.5
-                }
-            }
-            
-            print(f"Sending TTS request to ElevenLabs for text: {text[:50]}...")
-            response = requests.post(url, json=data, headers=headers)
-            
-            if response.status_code == 200:
-                print("Successfully generated speech with ElevenLabs")
-                return response.content
-            elif response.status_code == 401:
-                print(f"Error: Authentication failed with ElevenLabs API (401)")
-                print(response.text)
+            # Generate audio using the client directly
+            try:
+                # Use the client's text-to-speech method
+                audio_content = client.text_to_speech.convert(
+                    text=text,
+                    voice_id=voice_id,
+                    model_id=self.elevenlabs_model_id,
+                    voice_settings={
+                        "stability": 0.5,
+                        "similarity_boost": 0.5
+                    }
+                )
+                
+                print("Successfully generated speech with ElevenLabs client")
+                return audio_content
+                
+            except Exception as api_error:
+                error_text = str(api_error)
+                print(f"Error generating speech with ElevenLabs: {error_text}")
                 
                 # Check if this is a permissions issue
-                if "missing_permissions" in response.text:
+                if "missing_permissions" in error_text:
                     print("\nNOTE: Your ElevenLabs API key doesn't have the required permissions.")
-                    if "tts" in response.text:
-                        print("Your API key needs the 'tts' permission to generate speech.")
+                    if "text_to_speech" in error_text:
+                        print("Your API key needs the 'text_to_speech' permission to generate speech.")
                     print("Please check your ElevenLabs subscription and API key settings.")
-                else:
-                    print("Please verify your ElevenLabs API key is correct.")
-                
-                raise ValueError(f"Failed to authenticate with ElevenLabs: {response.status_code}")
-            else:
-                print(f"Error generating speech with ElevenLabs: {response.status_code}")
-                print(response.text)
+                    raise ValueError(f"Failed to authenticate with ElevenLabs: {error_text}")
                 
                 # Provide more helpful messages for common error codes
-                if response.status_code == 400:
+                if "400" in error_text:
                     print("This might be due to invalid input parameters or text content.")
-                elif response.status_code == 404:
+                elif "404" in error_text:
                     print(f"Voice ID '{voice_id}' not found. Please check if the voice ID is correct.")
-                elif response.status_code == 429:
+                elif "429" in error_text:
                     print("You've exceeded your API rate limit or quota. Please check your ElevenLabs subscription.")
                 
-                raise ValueError(f"Failed to generate speech with ElevenLabs: {response.status_code}")
+                raise ValueError(f"Failed to generate speech with ElevenLabs: {error_text}")
         except Exception as e:
             print(f"Exception generating speech with ElevenLabs: {e}")
             raise ValueError(f"Failed to generate speech with ElevenLabs: {e}")
