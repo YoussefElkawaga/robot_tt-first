@@ -5,7 +5,7 @@ import pvporcupine
 import pyaudio
 import struct
 import speech_recognition as sr
-import pyttsx3  # Keep for fallback
+# import pyttsx3  # Removed as we're using ElevenLabs exclusively
 import google.generativeai as genai
 from dotenv import load_dotenv
 from datetime import datetime
@@ -153,16 +153,32 @@ class ConversationRobot:
         # Initialize speech recognition
         self.recognizer = sr.Recognizer()
         
-        # Initialize ElevenLabs TTS
-        self.use_elevenlabs = self._parse_env_bool("USE_ELEVENLABS", True)
+        # Initialize ElevenLabs TTS (exclusive TTS system)
         self.elevenlabs_api_key = self._parse_env_str("ELEVENLABS_API_KEY", "")
+        if not self.elevenlabs_api_key:
+            raise ValueError("ElevenLabs API key is required. Set ELEVENLABS_API_KEY in .env file.")
         self.elevenlabs_voice_id = self._parse_env_str("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default voice
         self.elevenlabs_model_id = self._parse_env_str("ELEVENLABS_MODEL_ID", "eleven_monolingual_v1")
         self.elevenlabs_voices = []
+        self.use_elevenlabs = True  # Always true since we're exclusively using ElevenLabs
         
-        # Initialize pyttsx3 as fallback
-        self.tts_engine = pyttsx3.init()
-        self.setup_voice(voice_id, rate, volume)
+        # Setup voice properties
+        self.voice_rate = rate or self._parse_env_int("VOICE_RATE", 200)
+        self.voice_volume = volume or self._parse_env_float("VOICE_VOLUME", 1.0)
+        
+        # Try to fetch voices but continue even if it fails
+        try:
+            self.fetch_elevenlabs_voices()
+        except Exception as e:
+            print(f"Warning: Could not fetch ElevenLabs voices: {e}")
+            print("Continuing with default voice ID only...")
+            self.elevenlabs_voices = []
+            
+            # Check if this is a permissions issue
+            if "missing_permissions" in str(e) or "voices_read" in str(e):
+                print("\nNOTE: Your ElevenLabs API key doesn't have permission to list voices.")
+                print("This is normal for free tier accounts. You can still use text-to-speech with the default voice.")
+                print(f"Using default voice ID: {self.elevenlabs_voice_id}")
         
         # Add flag to control speech interruption
         self.is_speaking = False
@@ -600,82 +616,26 @@ class ConversationRobot:
             return None
         return self.current_emotion
     
-    def setup_voice(self, voice_id=None, rate=None, volume=None):
-        """Configure voice properties for both ElevenLabs and pyttsx3 fallback"""
-        # Get voice settings from parameters or environment variables
-        voice_id = voice_id or self._parse_env_str("VOICE_ID")
-        rate = rate or self._parse_env_int("VOICE_RATE", 200)
-        volume = volume or self._parse_env_float("VOICE_VOLUME", 1.0)
-        
-        # Configure pyttsx3 as fallback
-        voices = self.tts_engine.getProperty('voices')
-        print(f"Available pyttsx3 voices: {len(voices)}")
-        
-        # Set voice if specified for pyttsx3
-        if voice_id:
-            try:
-                voice_id = int(voice_id) if voice_id.isdigit() else voice_id
-                
-                if isinstance(voice_id, int) and 0 <= voice_id < len(voices):
-                    self.tts_engine.setProperty('voice', voices[voice_id].id)
-                    print(f"Set pyttsx3 voice to index {voice_id}: {voices[voice_id].name}")
-                else:
-                    # Try to find voice by ID or name
-                    for v in voices:
-                        if voice_id in v.id or voice_id.lower() in v.name.lower():
-                            self.tts_engine.setProperty('voice', v.id)
-                            print(f"Set pyttsx3 voice to: {v.name}")
-                            break
-            except Exception as e:
-                print(f"Error setting pyttsx3 voice: {e}")
-        
-        # Set rate if specified (default is 200)
-        if rate:
-            try:
-                self.tts_engine.setProperty('rate', rate)
-                print(f"Set pyttsx3 speech rate to: {rate}")
-            except Exception as e:
-                print(f"Error setting speech rate: {e}")
-        
-        # Set volume if specified (default is 1.0)
-        if volume:
-            try:
-                if 0.0 <= volume <= 1.0:
-                    self.tts_engine.setProperty('volume', volume)
-                    print(f"Set pyttsx3 speech volume to: {volume}")
-            except Exception as e:
-                print(f"Error setting speech volume: {e}")
-        
-        # Initialize ElevenLabs if enabled
-        if self.use_elevenlabs and self.elevenlabs_api_key:
-            try:
-                self.fetch_elevenlabs_voices()
-                print(f"ElevenLabs TTS initialized with voice ID: {self.elevenlabs_voice_id}")
-            except Exception as e:
-                print(f"Error initializing ElevenLabs TTS: {e}")
-                print("Falling back to pyttsx3 for text-to-speech")
-                self.use_elevenlabs = False
-    
     def list_available_voices(self):
-        """List all available voices for both ElevenLabs and pyttsx3"""
-        # List pyttsx3 voices
-        voices = self.tts_engine.getProperty('voices')
-        print("\nAvailable pyttsx3 voices:")
-        for i, voice in enumerate(voices):
-            print(f"{i}: {voice.name} ({voice.id})")
-        
-        # List ElevenLabs voices if enabled
-        if self.use_elevenlabs and self.elevenlabs_voices:
+        """List all available ElevenLabs voices"""
+        # List ElevenLabs voices
+        if self.elevenlabs_voices:
             print("\nAvailable ElevenLabs voices:")
             for i, voice in enumerate(self.elevenlabs_voices):
                 print(f"{i}: {voice.get('name', 'Unknown')} ({voice.get('voice_id', 'Unknown')})")
+        else:
+            print("\nNo ElevenLabs voices available to list. Using default voice ID:")
+            print(f"Default voice ID: {self.elevenlabs_voice_id}")
+            print("\nNote: This may be due to API key permissions or connectivity issues.")
+            print("You can still use ElevenLabs TTS with the default voice ID.")
         print()
+    
     
     def fetch_elevenlabs_voices(self):
         """Fetch available voices from ElevenLabs API"""
         if not self.elevenlabs_api_key:
             print("ElevenLabs API key not set. Cannot fetch voices.")
-            return False
+            raise ValueError("ElevenLabs API key is required for TTS functionality")
             
         try:
             url = "https://api.elevenlabs.io/v1/voices"
@@ -684,6 +644,7 @@ class ConversationRobot:
                 "xi-api-key": self.elevenlabs_api_key
             }
             
+            print("Attempting to fetch voices from ElevenLabs...")
             response = requests.get(url, headers=headers)
             if response.status_code == 200:
                 data = response.json()
@@ -696,22 +657,48 @@ class ConversationRobot:
                     print(f"- {voice.get('name', 'Unknown')}: {voice.get('voice_id', 'Unknown')}")
                 
                 return True
+            elif response.status_code == 401:
+                # Handle authentication/permission errors gracefully
+                print(f"Warning: Unable to fetch ElevenLabs voices due to authentication or permission issues (401)")
+                print(f"Response: {response.text}")
+                
+                # Check if this is specifically a permissions issue
+                if "missing_permissions" in response.text or "voices_read" in response.text:
+                    print("\nNOTE: Your ElevenLabs API key doesn't have permission to list voices.")
+                    print("This is normal for free tier accounts. You can still use text-to-speech with the default voice.")
+                    print(f"Using default voice ID: {self.elevenlabs_voice_id}")
+                else:
+                    print("Please check your API key and try again.")
+                
+                print("Continuing with default voice ID only...")
+                self.elevenlabs_voices = []
+                return False
             else:
-                print(f"Error fetching ElevenLabs voices: {response.status_code}")
+                print(f"Warning: Error fetching ElevenLabs voices: {response.status_code}")
                 print(response.text)
+                print("Continuing with default voice ID only...")
+                self.elevenlabs_voices = []
                 return False
         except Exception as e:
-            print(f"Exception fetching ElevenLabs voices: {e}")
+            print(f"Warning: Exception fetching ElevenLabs voices: {e}")
+            print("Continuing with default voice ID only...")
+            self.elevenlabs_voices = []
             return False
     
-    def elevenlabs_tts(self, text):
+    def elevenlabs_tts(self, text, voice_id=None):
         """Convert text to speech using ElevenLabs API"""
-        if not self.elevenlabs_api_key or not self.elevenlabs_voice_id:
-            print("ElevenLabs API key or voice ID not set. Cannot generate speech.")
-            return None
+        if not self.elevenlabs_api_key:
+            print("ElevenLabs API key not set. Cannot generate speech.")
+            raise ValueError("ElevenLabs API key is required for TTS functionality")
+            
+        # Use specified voice_id or default
+        voice_id = voice_id or self.elevenlabs_voice_id
+        if not voice_id:
+            print("ElevenLabs voice ID not set. Cannot generate speech.")
+            raise ValueError("ElevenLabs voice ID is required for TTS functionality")
             
         try:
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.elevenlabs_voice_id}"
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             
             headers = {
                 "Accept": "audio/mpeg",
@@ -734,13 +721,36 @@ class ConversationRobot:
             if response.status_code == 200:
                 print("Successfully generated speech with ElevenLabs")
                 return response.content
+            elif response.status_code == 401:
+                print(f"Error: Authentication failed with ElevenLabs API (401)")
+                print(response.text)
+                
+                # Check if this is a permissions issue
+                if "missing_permissions" in response.text:
+                    print("\nNOTE: Your ElevenLabs API key doesn't have the required permissions.")
+                    if "tts" in response.text:
+                        print("Your API key needs the 'tts' permission to generate speech.")
+                    print("Please check your ElevenLabs subscription and API key settings.")
+                else:
+                    print("Please verify your ElevenLabs API key is correct.")
+                
+                raise ValueError(f"Failed to authenticate with ElevenLabs: {response.status_code}")
             else:
                 print(f"Error generating speech with ElevenLabs: {response.status_code}")
                 print(response.text)
-                return None
+                
+                # Provide more helpful messages for common error codes
+                if response.status_code == 400:
+                    print("This might be due to invalid input parameters or text content.")
+                elif response.status_code == 404:
+                    print(f"Voice ID '{voice_id}' not found. Please check if the voice ID is correct.")
+                elif response.status_code == 429:
+                    print("You've exceeded your API rate limit or quota. Please check your ElevenLabs subscription.")
+                
+                raise ValueError(f"Failed to generate speech with ElevenLabs: {response.status_code}")
         except Exception as e:
             print(f"Exception generating speech with ElevenLabs: {e}")
-            return None
+            raise ValueError(f"Failed to generate speech with ElevenLabs: {e}")
     
     def play_audio(self, audio_data):
         """Play audio data with interrupt capability"""
@@ -1336,12 +1346,6 @@ class ConversationRobot:
                         
                         # Set flags to stop speech
                         self.stop_speaking = True
-                        
-                        # Force stop the TTS engine
-                        try:
-                            self.tts_engine.stop()
-                        except:
-                            pass
                             
                         # Visual feedback for interrupt detection (only if show_webcam is True)
                         if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
@@ -1378,10 +1382,10 @@ class ConversationRobot:
         except Exception as e:
             print(f"Error setting up interrupt detection: {e}")
     
-    def speak(self, text):
+    def speak(self, text, interrupt_check=None, voice_id=None):
         """Convert text to speech with improved natural delivery and IMMEDIATE interrupt capability"""
         if not text:
-            return
+            return True
         
         try:
             print(f"Robot: {text}")
@@ -1441,141 +1445,88 @@ class ConversationRobot:
                 if current_chunk.strip():
                     chunks.append(current_chunk.strip())
                 
-                # Use ElevenLabs TTS if enabled, otherwise fallback to pyttsx3
-                if self.use_elevenlabs and self.elevenlabs_api_key:
-                    # Speak each chunk with frequent interrupt checks
-                    for i, chunk in enumerate(chunks):
-                        # Check if we should stop speaking BEFORE speaking this chunk
-                        if self.stop_speaking:
-                            print("Speech interrupted - stopping immediately")
-                            break
-                            
-                        # Update visual feedback with progress (only if show_webcam is True)
-                        if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                            _, frame = self.emotion_cap.read()
-                            if frame is not None:
-                                # Clear previous text with green background
-                                cv2.rectangle(frame,
-                                            (0, frame.shape[0] - 40),
-                                            (frame.shape[1], frame.shape[0]),
-                                            (0, 100, 0),
-                                            -1)
-                                            
-                                progress = f"Speaking... ({i+1}/{len(chunks)}) - Say '{self.wake_word}' to interrupt"
-                                cv2.putText(
-                                    frame,
-                                    progress,
-                                    (10, frame.shape[0] - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7,
-                                    (255, 255, 255),  # White text on green background
-                                    2,
-                                )
-                                cv2.imshow("Emotion Detection", frame)
-                                cv2.waitKey(1)
+                # Speak each chunk with frequent interrupt checks
+                for i, chunk in enumerate(chunks):
+                    # Check if we should stop speaking BEFORE speaking this chunk
+                    if self.stop_speaking:
+                        print("Speech interrupted - stopping immediately")
+                        break
                         
+                    # Update visual feedback with progress (only if show_webcam is True)
+                    if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
+                        _, frame = self.emotion_cap.read()
+                        if frame is not None:
+                            # Clear previous text with green background
+                            cv2.rectangle(frame,
+                                        (0, frame.shape[0] - 40),
+                                        (frame.shape[1], frame.shape[0]),
+                                        (0, 100, 0),
+                                        -1)
+                                        
+                            progress = f"Speaking... ({i+1}/{len(chunks)}) - Say '{self.wake_word}' to interrupt"
+                            cv2.putText(
+                                frame,
+                                progress,
+                                (10, frame.shape[0] - 20),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7,
+                                (255, 255, 255),  # White text on green background
+                                2,
+                            )
+                            cv2.imshow("Emotion Detection", frame)
+                            cv2.waitKey(1)
+                    
+                    try:
                         # Generate speech with ElevenLabs
-                        audio_data = self.elevenlabs_tts(chunk)
+                        audio_data = self.elevenlabs_tts(chunk, voice_id)
                         
                         # Play audio with interrupt capability
-                        if audio_data:
-                            self.play_audio(audio_data)
-                            
-                            # Wait for audio to finish or be interrupted
-                            if self.audio_player:
-                                while self.audio_player.is_alive() and not self.stop_speaking:
-                                    time.sleep(0.1)
-                        else:
-                            # Fallback to pyttsx3 if ElevenLabs fails
-                            print("ElevenLabs TTS failed, falling back to pyttsx3 for this chunk")
-                            self.tts_engine.say(chunk)
-                            self.tts_engine.runAndWait()
-                        
-                        # Check if we should stop speaking AFTER speaking this chunk
-                        if self.stop_speaking:
-                            print("Speech interrupted between chunks - stopping immediately")
-                            break
-                        
-                        # Very brief pause between chunks for interrupt opportunity
-                        if i < len(chunks) - 1:
-                            # Check for interrupts during pause
-                            for _ in range(3):  # Check 3 times during pause
-                                if self.stop_speaking:
-                                    print("Speech interrupted during pause - stopping immediately")
-                                    break
-                                time.sleep(0.1)  # Very short pause with frequent checks
-                else:
-                    # Fallback to pyttsx3 for chunked speech
-                    for i, chunk in enumerate(chunks):
-                        # Check if we should stop speaking BEFORE speaking this chunk
-                        if self.stop_speaking:
-                            print("Speech interrupted - stopping immediately")
-                            break
-                            
-                        # Update visual feedback with progress (only if show_webcam is True)
-                        if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                            _, frame = self.emotion_cap.read()
-                            if frame is not None:
-                                # Clear previous text with green background
-                                cv2.rectangle(frame,
-                                            (0, frame.shape[0] - 40),
-                                            (frame.shape[1], frame.shape[0]),
-                                            (0, 100, 0),
-                                            -1)
-                                            
-                                progress = f"Speaking... ({i+1}/{len(chunks)}) - Say '{self.wake_word}' to interrupt"
-                                cv2.putText(
-                                    frame,
-                                    progress,
-                                    (10, frame.shape[0] - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7,
-                                    (255, 255, 255),  # White text on green background
-                                    2,
-                                )
-                                cv2.imshow("Emotion Detection", frame)
-                                cv2.waitKey(1)
-                        
-                        # Speak this chunk with interrupt check
-                        self.tts_engine.say(chunk)
-                        self.tts_engine.runAndWait()
-                        
-                        # Check if we should stop speaking AFTER speaking this chunk
-                        if self.stop_speaking:
-                            print("Speech interrupted between chunks - stopping immediately")
-                            break
-                        
-                        # Very brief pause between chunks for interrupt opportunity
-                        if i < len(chunks) - 1:
-                            # Check for interrupts during pause
-                            for _ in range(3):  # Check 3 times during pause
-                                if self.stop_speaking:
-                                    print("Speech interrupted during pause - stopping immediately")
-                                    break
-                                time.sleep(0.1)  # Very short pause with frequent checks
-            else:
-                # For shorter responses
-                if self.use_elevenlabs and self.elevenlabs_api_key:
-                    # Generate speech with ElevenLabs
-                    audio_data = self.elevenlabs_tts(processed_text)
-                    
-                    # Play audio with interrupt capability
-                    if audio_data:
                         self.play_audio(audio_data)
                         
                         # Wait for audio to finish or be interrupted
                         if self.audio_player:
                             while self.audio_player.is_alive() and not self.stop_speaking:
+                                if interrupt_check and interrupt_check():
+                                    self.stop_speaking = True
+                                    break
                                 time.sleep(0.1)
-                    else:
-                        # Fallback to pyttsx3 if ElevenLabs fails
-                        print("ElevenLabs TTS failed, falling back to pyttsx3")
-                        self.tts_engine.say(processed_text)
-                        self.tts_engine.runAndWait()
-                else:
-                    # Fallback to pyttsx3
-                    self.tts_engine.say(processed_text)
-                    self.tts_engine.runAndWait()
+                    except Exception as e:
+                        print(f"Error generating speech for chunk: {e}")
+                        # Continue with next chunk instead of failing completely
+                        continue
+                    
+                    # Check if we should stop speaking AFTER speaking this chunk
+                    if self.stop_speaking:
+                        print("Speech interrupted between chunks - stopping immediately")
+                        break
+                    
+                    # Very brief pause between chunks for interrupt opportunity
+                    if i < len(chunks) - 1:
+                        # Check for interrupts during pause
+                        for _ in range(3):  # Check 3 times during pause
+                            if self.stop_speaking:
+                                print("Speech interrupted during pause - stopping immediately")
+                                break
+                            time.sleep(0.1)  # Very short pause with frequent checks
+            else:
+                # For shorter responses
+                try:
+                    # Generate speech with ElevenLabs
+                    audio_data = self.elevenlabs_tts(processed_text, voice_id)
+                    
+                    # Play audio with interrupt capability
+                    self.play_audio(audio_data)
+                    
+                    # Wait for audio to finish or be interrupted
+                    if self.audio_player:
+                        while self.audio_player.is_alive() and not self.stop_speaking:
+                            if interrupt_check and interrupt_check():
+                                self.stop_speaking = True
+                                break
+                            time.sleep(0.1)
+                except Exception as e:
+                    print(f"Error generating speech: {e}")
+                    return False
             
             # Check if speech was interrupted by wake word - IMMEDIATE RESPONSE
             if self.stop_speaking:
@@ -1587,9 +1538,6 @@ class ConversationRobot:
                     if self.audio_player and self.audio_player.is_alive():
                         # Audio player will check stop_speaking flag and stop
                         time.sleep(0.2)  # Brief pause to allow cleanup
-                    else:
-                        # Fallback to pyttsx3 stop
-                        self.tts_engine.stop()
                 except:
                     pass
                 
@@ -1653,7 +1601,7 @@ class ConversationRobot:
                         
                         # Speak the response to the new question
                         print("RESPONDING TO YOUR QUESTION...")
-                        self.speak(ai_response)
+                        self.speak(ai_response, None, None)
                 else:
                     print("No question detected after interruption")
                     # Resume listening for wake word immediately
@@ -1661,6 +1609,7 @@ class ConversationRobot:
             
         except Exception as e:
             print(f"Error in text-to-speech: {e}")
+            return False
         finally:
             # Ensure flags are reset even if an error occurs
             self.is_speaking = False
@@ -1674,6 +1623,8 @@ class ConversationRobot:
                     bottom_area = frame.copy()
                     cv2.imshow("Emotion Detection", frame)
                     cv2.waitKey(1)
+            
+            return True
     
     def process_text_for_speech(self, text):
         """Process text to improve speech quality with clear, calm delivery for autistic children"""
@@ -1906,7 +1857,7 @@ class ConversationRobot:
                         # Check for conversation control commands
                         if user_input.lower() in ["stop", "exit", "quit", "goodbye"]:
                             farewell = "Goodbye! Have a great day."
-                            self.speak(farewell)
+                            self.speak(farewell, None, None)
                             print("Conversation ended by user command.")
                             break
                         
@@ -1971,7 +1922,7 @@ class ConversationRobot:
                             self.conversation_history.append(history_entry)
                         
                         # Speak the response
-                        self.speak(ai_response)
+                        self.speak(ai_response, None, None)
                         
                         # If this was a follow-up, wait briefly for another follow-up
                         if is_follow_up:
@@ -2107,26 +2058,105 @@ if __name__ == "__main__":
     print(f"Available default wake words: {', '.join(DEFAULT_WAKE_WORDS)}")
     
     # Get settings from environment variables
-    # Use the robot's parsing functions to handle comments in env vars
-    robot_temp = ConversationRobot()  # Create a temporary instance just to use the parsing functions
-    wake_word = robot_temp._parse_env_str("WAKE_WORD", "computer")
-    save_history = robot_temp._parse_env_bool("SAVE_HISTORY", False)
-    voice_id = robot_temp._parse_env_str("VOICE_ID")
-    voice_rate = robot_temp._parse_env_int("VOICE_RATE", 200)
-    voice_volume = robot_temp._parse_env_float("VOICE_VOLUME", 1.0)
-    use_emotion_detection = robot_temp._parse_env_bool("USE_EMOTION_DETECTION", True)
-    show_webcam = robot_temp._parse_env_bool("SHOW_WEBCAM", False)
+    # Create a minimal temporary class just to parse environment variables
+    class EnvParser:
+        def __init__(self):
+            pass
+            
+        def _parse_env_str(self, key, default=""):
+            """Parse environment variable as string, handling inline comments"""
+            value = os.getenv(key, default)
+            if value:
+                # Remove any inline comments (text after #)
+                parts = value.split('#', 1)
+                return parts[0].strip()
+            return default
+        
+        def _parse_env_int(self, key, default=0):
+            """Parse environment variable as integer, handling inline comments"""
+            value = self._parse_env_str(key, str(default))
+            try:
+                return int(value)
+            except ValueError:
+                print(f"Warning: Could not parse {key}={value} as integer. Using default: {default}")
+                return default
+        
+        def _parse_env_float(self, key, default=0.0):
+            """Parse environment variable as float, handling inline comments"""
+            value = self._parse_env_str(key, str(default))
+            try:
+                return float(value)
+            except ValueError:
+                print(f"Warning: Could not parse {key}={value} as float. Using default: {default}")
+                return default
+        
+        def _parse_env_bool(self, key, default=False):
+            """Parse environment variable as boolean, handling inline comments"""
+            value = self._parse_env_str(key, str(default)).lower()
+            return value in ('true', 'yes', '1', 't', 'y')
+    
+    # Use the parser to get environment variables without initializing the full robot
+    env_parser = EnvParser()
+    wake_word = env_parser._parse_env_str("WAKE_WORD", "computer")
+    save_history = env_parser._parse_env_bool("SAVE_HISTORY", False)
+    voice_id = env_parser._parse_env_str("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+    voice_rate = env_parser._parse_env_int("VOICE_RATE", 200)
+    voice_volume = env_parser._parse_env_float("VOICE_VOLUME", 1.0)
+    use_emotion_detection = env_parser._parse_env_bool("USE_EMOTION_DETECTION", True)
+    show_webcam = env_parser._parse_env_bool("SHOW_WEBCAM", False)
     
     # Check for list voices flag
-    if robot_temp._parse_env_bool("LIST_VOICES", False):
-        temp_engine = pyttsx3.init()
-        voices = temp_engine.getProperty('voices')
-        print("\nAvailable voices:")
-        for i, voice in enumerate(voices):
-            print(f"{i}: {voice.name} ({voice.id})")
-        print()
+    if env_parser._parse_env_bool("LIST_VOICES", False):
+        # List ElevenLabs voices
+        print("\nListing ElevenLabs voices...")
+        try:
+            # Use a lightweight approach to list voices
+            elevenlabs_api_key = env_parser._parse_env_str("ELEVENLABS_API_KEY", "")
+            if not elevenlabs_api_key:
+                print("\nError: ElevenLabs API key is not set.")
+                print("You must set a valid ELEVENLABS_API_KEY in your .env file.")
+                print("Get a free API key from https://elevenlabs.io")
+                print(f"Default voice ID: {voice_id}")
+            else:
+                # Fetch voices directly without creating a full robot instance
+                url = "https://api.elevenlabs.io/v1/voices"
+                headers = {
+                    "Accept": "application/json",
+                    "xi-api-key": elevenlabs_api_key
+                }
+                
+                print("Fetching voices from ElevenLabs...")
+                response = requests.get(url, headers=headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    voices = data.get("voices", [])
+                    print(f"\nAvailable ElevenLabs voices:")
+                    for i, voice in enumerate(voices):
+                        print(f"{i}: {voice.get('name', 'Unknown')} ({voice.get('voice_id', 'Unknown')})")
+                elif response.status_code == 401:
+                    print(f"\nWarning: Unable to fetch ElevenLabs voices due to authentication or permission issues (401)")
+                    print(f"Response: {response.text}")
+                    
+                    # Check if this is specifically a permissions issue
+                    if "missing_permissions" in response.text or "voices_read" in response.text:
+                        print("\nNOTE: Your ElevenLabs API key doesn't have permission to list voices.")
+                        print("This is normal for free tier accounts. You can still use text-to-speech with the default voice.")
+                    else:
+                        print("Please check your API key and try again.")
+                    
+                    print(f"Default voice ID: {voice_id}")
+                else:
+                    print(f"\nWarning: Error fetching ElevenLabs voices: {response.status_code}")
+                    print(response.text)
+                    print(f"Default voice ID: {voice_id}")
+        except Exception as e:
+            print(f"Error listing ElevenLabs voices: {e}")
+            print(f"Default voice ID: {voice_id}")
     
     try:
+        print("\nInitializing Conversation Robot...")
+        print("Note: If you encounter ElevenLabs API permission issues, the robot will still work with the default voice.")
+        
         # Create and run the robot
         robot = ConversationRobot(
             wake_word=wake_word,
@@ -2139,7 +2169,7 @@ if __name__ == "__main__":
         )
         
         # Test beep sounds before running
-        if robot_temp._parse_env_bool("ENABLE_BEEP", True):
+        if env_parser._parse_env_bool("ENABLE_BEEP", True):
             print("Testing beep functionality before starting...")
             robot.test_beep_sounds()
         
@@ -2147,6 +2177,21 @@ if __name__ == "__main__":
     except ValueError as e:
         print(f"Error: {e}")
         print("Please fix the issues and try again.")
+        
+        if "ElevenLabs API key" in str(e):
+            print("\nIMPORTANT: This application now exclusively uses ElevenLabs for text-to-speech.")
+            print("You must set a valid ELEVENLABS_API_KEY in your .env file.")
+            print("Get a free API key from https://elevenlabs.io")
+            
+            # Check if the API key is already set but might have permission issues
+            elevenlabs_api_key = env_parser._parse_env_str("ELEVENLABS_API_KEY", "")
+            if elevenlabs_api_key:
+                print("\nYour API key is set but might have permission issues.")
+                print("Free tier accounts may have limited permissions, but should still work for basic text-to-speech.")
+                print("If you're experiencing issues:")
+                print("1. Verify your API key is correct")
+                print("2. Check your ElevenLabs subscription status")
+                print("3. Make sure your API key has the 'tts' permission")
     except Exception as e:
         print(f"Unexpected error: {e}")
-        print("Please check your configuration and try again.") 
+        print("Please check your configuration and try again.")
