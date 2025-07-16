@@ -39,9 +39,9 @@ DEFAULT_ARDUINO_PORT = "COM3" if platform.system() == "Windows" else "/dev/ttyAC
 
 # Set environment variables directly in code
 # This ensures the script works even if the .env file has issues
-os.environ["PORCUPINE_ACCESS_KEY"] = "qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag=="
+os.environ["PORCUPINE_ACCESS_KEY"] = "NmPe6ZpjhI+7CuR5gR7DlZMHNFZZ5Jks2sqiINUl3yCCAF/QdCn51A=="
 os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
-os.environ["ELEVENLABS_API_KEY"] = "sk_66dccabc23a81c5c5fc8ca593063faab9040dfea9cdb59a0"
+os.environ["ELEVENLABS_API_KEY"] = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
 os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
 os.environ["WAKE_WORD"] = "alexa"
 os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
