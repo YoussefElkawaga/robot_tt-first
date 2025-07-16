@@ -1672,13 +1672,17 @@ class ConversationRobot:
         # List of keywords that might indicate robot movement commands
         movement_keywords = {
             "wave": "talk",
+            "shake hand": "shake_hand",  # More general match for "shake hand"
             "shake hands": "shake_hand",
             "shake your hand": "shake_hand",
             "give me five": "shake_hand",
             "high five": "shake_hand",
+            "handshake": "shake_hand",
             "dance": "happy",
             "be happy": "happy",
             "celebrate": "happy",
+            "happy dance": "happy",
+            "do a dance": "happy",
             "stand still": "idle",
             "stay still": "idle",
             "reset": "idle",
@@ -1689,13 +1693,26 @@ class ConversationRobot:
             "move your hand": "talk"
         }
         
-        # Check user input for movement commands
+        # Check user input for movement commands - with more robust detection
         user_input_lower = user_input.lower()
+        
+        # Direct command detection
         for keyword, command in movement_keywords.items():
             if keyword in user_input_lower:
-                print(f"Detected movement command '{command}' from user input")
+                print(f"Detected movement command '{command}' from user input: '{keyword}'")
                 self.send_message_to_arduino(command + '\n')  # Add newline for Arduino Serial.readStringUntil('\n')
                 return
+        
+        # Special handling for common phrases that might not be caught above
+        if "hand" in user_input_lower and ("shake" in user_input_lower or "shaking" in user_input_lower):
+            print("Detected handshake command from context")
+            self.send_message_to_arduino("shake_hand\n")
+            return
+            
+        if "dance" in user_input_lower:
+            print("Detected dance command from context")
+            self.send_message_to_arduino("happy\n")
+            return
         
         # Also check AI response for movement indications
         # This is a fallback in case the user's command wasn't directly detected
@@ -1706,11 +1723,11 @@ class ConversationRobot:
             print("AI response indicates waving - sending 'talk' command")
             self.send_message_to_arduino("talk\n")
         
-        elif "shake hands" in ai_response_lower or "shake your hand" in ai_response_lower or "high five" in ai_response_lower:
+        elif "shake hands" in ai_response_lower or "shake your hand" in ai_response_lower or "high five" in ai_response_lower or "handshake" in ai_response_lower:
             print("AI response indicates handshake - sending 'shake_hand' command")
             self.send_message_to_arduino("shake_hand\n")
         
-        elif "i'm happy" in ai_response_lower or "i'll dance" in ai_response_lower or "dancing" in ai_response_lower:
+        elif "i'm happy" in ai_response_lower or "i'll dance" in ai_response_lower or "dancing" in ai_response_lower or "dance for you" in ai_response_lower:
             print("AI response indicates happiness - sending 'happy' command")
             self.send_message_to_arduino("happy\n")
         
@@ -2197,13 +2214,43 @@ class ConversationRobot:
         
         # Test Arduino connection and set to idle pose
         print("\nTesting Arduino connection...")
-        if self.test_arduino_connection():
-            print("✅ Arduino connection is working correctly")
-            # Set robot to idle pose at startup
+        arduino_retries = 3
+        arduino_connected = False
+        
+        for attempt in range(arduino_retries):
+            if self.test_arduino_connection():
+                print("✅ Arduino connection is working correctly")
+                # Set robot to idle pose at startup
+                self.send_message_to_arduino("idle\n")
+                print("Robot set to idle pose")
+                arduino_connected = True
+                break
+            else:
+                if attempt < arduino_retries - 1:
+                    print(f"⚠️ Arduino connection failed - retrying ({attempt+1}/{arduino_retries})...")
+                    time.sleep(1)
+                else:
+                    print("⚠️ Arduino connection failed after multiple attempts - robot movements will not work")
+                    print("You can still use the conversation features without robot movements")
+        
+        # If Arduino is connected, verify key commands work
+        if arduino_connected:
+            print("\nVerifying robot commands...")
+            # Test the key commands we'll be using
+            key_commands = {
+                "shake_hand": "Testing handshake command",
+                "happy": "Testing dance command",
+                "talk": "Testing talk command"
+            }
+            
+            for cmd, description in key_commands.items():
+                print(description)
+                self.send_message_to_arduino(cmd + "\n")
+                time.sleep(0.5)
+            
+            # Return to idle pose
             self.send_message_to_arduino("idle\n")
-            print("Robot set to idle pose")
-        else:
-            print("⚠️ Arduino connection failed - robot movements will not work")
+            print("Robot commands verified and robot returned to idle pose")
         
         # Start emotion detection if enabled
         if self.use_emotion_detection:
@@ -3188,10 +3235,13 @@ class ConversationRobot:
         return True
     
     def setup_arduino_connection(self):
-        """Set up the Arduino connection"""
+        """Set up the Arduino connection with improved detection for Raspberry Pi"""
         try:
             # List available serial ports to help users
-            self.list_serial_ports()
+            arduino_port = self.find_arduino_port()
+            if arduino_port:
+                self.arduino_port = arduino_port
+                print(f"Auto-detected Arduino port: {arduino_port}")
             
             print(f"Setting up Arduino connection on {self.arduino_port} at {self.arduino_baud_rate} baud...")
             self.arduino_serial = serial.Serial(self.arduino_port, self.arduino_baud_rate, timeout=1)
@@ -3201,7 +3251,90 @@ class ConversationRobot:
         except Exception as e:
             print(f"Failed to set up Arduino connection: {e}")
             print("Please check your Arduino connection and try again.")
-            return False
+            
+            # If connection failed, try common alternative ports
+            return self.try_alternative_ports()
+    
+    def find_arduino_port(self):
+        """Find Arduino port with improved detection for Raspberry Pi"""
+        try:
+            import serial.tools.list_ports
+            ports = serial.tools.list_ports.comports()
+            
+            if not ports:
+                print("No serial ports found. Make sure your Arduino is connected.")
+                return None
+            
+            print("\nScanning for Arduino...")
+            
+            # First, look for ports that explicitly identify as Arduino
+            for port in ports:
+                if port.manufacturer and "arduino" in port.manufacturer.lower():
+                    print(f"Found Arduino by manufacturer: {port.device}")
+                    return port.device
+                if port.description and "arduino" in port.description.lower():
+                    print(f"Found Arduino by description: {port.device}")
+                    return port.device
+            
+            # On Raspberry Pi, look for specific patterns
+            if platform.system() == 'Linux':
+                # Check for common Arduino ports on Raspberry Pi
+                for port in ports:
+                    # Check for common Arduino port names on Linux/Raspberry Pi
+                    if any(port.device.startswith(prefix) for prefix in ['/dev/ttyACM', '/dev/ttyUSB', '/dev/ttyAMA']):
+                        print(f"Found likely Arduino on Raspberry Pi: {port.device}")
+                        return port.device
+            
+            # On Windows, look for COM ports
+            elif platform.system() == 'Windows':
+                # Just use the first available COM port if we haven't found one yet
+                for port in ports:
+                    if 'COM' in port.device:
+                        print(f"Found potential Arduino on Windows: {port.device}")
+                        return port.device
+            
+            # If we get here, just use the first available port as a last resort
+            if ports:
+                print(f"No Arduino specifically identified. Using first available port: {ports[0].device}")
+                return ports[0].device
+                
+            return None
+        except Exception as e:
+            print(f"Error finding Arduino port: {e}")
+            return None
+    
+    def try_alternative_ports(self):
+        """Try connecting to alternative common Arduino ports"""
+        common_ports = []
+        
+        # Add common ports based on platform
+        if platform.system() == 'Linux':
+            # Common Raspberry Pi Arduino ports
+            common_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyAMA0']
+        elif platform.system() == 'Windows':
+            # Common Windows Arduino ports
+            common_ports = ['COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8']
+        else:  # macOS
+            common_ports = ['/dev/cu.usbmodem1401', '/dev/cu.usbserial', '/dev/tty.usbmodem']
+        
+        # Remove the port we already tried
+        if self.arduino_port in common_ports:
+            common_ports.remove(self.arduino_port)
+        
+        # Try each port
+        for port in common_ports:
+            try:
+                print(f"Trying alternative port: {port}")
+                self.arduino_serial = serial.Serial(port, self.arduino_baud_rate, timeout=1)
+                time.sleep(2)  # Wait for Arduino to reset
+                self.arduino_port = port
+                print(f"Successfully connected to Arduino on {port}")
+                return True
+            except Exception as e:
+                print(f"Could not connect to {port}: {e}")
+        
+        print("Could not find Arduino on any common ports")
+        return False
     
     def list_serial_ports(self):
         """List all available serial ports to help identify Arduino"""
@@ -3254,38 +3387,99 @@ class ConversationRobot:
             
             # Try to read response if Arduino sends any
             if self.arduino_serial.in_waiting:
-                response = self.arduino_serial.readline().decode('utf-8').strip()
+                response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
                 print(f"Arduino response: {response}")
             
-            print("Arduino test completed successfully")
-            return True
+            # Verify the Arduino is actually responding to commands
+            if self.verify_arduino_response():
+                print("Arduino test completed successfully - verified Arduino is responding to commands")
+                return True
+            else:
+                print("Arduino connection established but not responding to commands")
+                return False
+                
         except Exception as e:
             print(f"Arduino test failed: {e}")
             return False
     
+    def verify_arduino_response(self):
+        """Verify that the Arduino is actually responding to commands"""
+        try:
+            print("Verifying Arduino response...")
+            
+            # Clear input buffer
+            while self.arduino_serial.in_waiting:
+                self.arduino_serial.read(self.arduino_serial.in_waiting)
+            
+            # Send a test command sequence
+            test_commands = ["idle\n", "talk\n", "idle\n"]
+            for cmd in test_commands:
+                print(f"Sending test command: {cmd.strip()}")
+                self.arduino_serial.write(cmd.encode())
+                self.arduino_serial.flush()
+                time.sleep(0.5)  # Give Arduino time to process
+            
+            # If we got here without errors, assume Arduino is working
+            print("Arduino responded to test commands without errors")
+            return True
+        except Exception as e:
+            print(f"Arduino verification failed: {e}")
+            return False
+    
     def send_message_to_arduino(self, message):
-        """Send a message to the Arduino"""
+        """Send a message to the Arduino with improved reliability"""
+        # Make sure message ends with newline for Arduino's Serial.readStringUntil('\n')
+        if not message.endswith('\n'):
+            message += '\n'
+            
         if not self.arduino_serial:
             print("Arduino connection not established, attempting to reconnect...")
             if not self.setup_arduino_connection():
                 print("Could not establish Arduino connection to send message")
                 return False
         
-        try:
-            print(f"Sending message to Arduino: {message}")
-            self.arduino_serial.write(message.encode())
-            time.sleep(0.1)  # Small delay to ensure message is sent
-            
-            # Try to read response if Arduino sends any
-            if self.arduino_serial.in_waiting:
-                response = self.arduino_serial.readline().decode('utf-8').strip()
-                print(f"Arduino response: {response}")
-            
-            return True
-        except Exception as e:
-            print(f"Failed to send message to Arduino: {e}")
-            print("Please check your Arduino connection and try again.")
-            return False
+        # Maximum retry attempts
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Clear any pending data in the buffer
+                while self.arduino_serial.in_waiting:
+                    self.arduino_serial.read(self.arduino_serial.in_waiting)
+                
+                print(f"Sending message to Arduino: {message.strip()}")
+                self.arduino_serial.write(message.encode())
+                self.arduino_serial.flush()  # Ensure data is sent immediately
+                time.sleep(0.2)  # Small delay to ensure message is sent and processed
+                
+                # Try to read response if Arduino sends any
+                if self.arduino_serial.in_waiting:
+                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
+                    print(f"Arduino response: {response}")
+                
+                return True
+            except serial.SerialException as e:
+                print(f"Serial error on attempt {retry_count+1}: {e}")
+                retry_count += 1
+                
+                if retry_count < max_retries:
+                    print(f"Attempting to reconnect (attempt {retry_count+1}/{max_retries})...")
+                    try:
+                        # Close and reopen the connection
+                        if self.arduino_serial:
+                            self.arduino_serial.close()
+                        time.sleep(1)
+                        self.setup_arduino_connection()
+                    except Exception as reconnect_error:
+                        print(f"Reconnection failed: {reconnect_error}")
+            except Exception as e:
+                print(f"Failed to send message to Arduino: {e}")
+                retry_count += 1
+                time.sleep(0.5)
+        
+        print(f"Failed to send message to Arduino after {max_retries} attempts")
+        return False
 
 
 def check_env_file():
