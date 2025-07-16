@@ -195,8 +195,9 @@ class ConversationRobot:
         if not self.elevenlabs_api_key and "ELEVENLABS_API_KEY" in os.environ:
             self.elevenlabs_api_key = os.environ["ELEVENLABS_API_KEY"]
         if not self.elevenlabs_api_key:
-            self.elevenlabs_api_key = "sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61"
-            print("Using hardcoded ElevenLabs API key")
+            # Use the provided API key from the environment variables
+            self.elevenlabs_api_key = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
+            print("Using environment variable ElevenLabs API key")
             
         self.elevenlabs_voice_id = self._parse_env_str("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
         self.elevenlabs_model_id = self._parse_env_str("ELEVENLABS_MODEL_ID", "eleven_monolingual_v1")
@@ -204,6 +205,16 @@ class ConversationRobot:
         self.use_elevenlabs = True
         self.elevenlabs_failed = False
         self.audio_player = None
+        
+        # Try to initialize the ElevenLabs client right away to check if the API key works
+        try:
+            print(f"Initializing ElevenLabs with API key: {self.elevenlabs_api_key[:5]}...{self.elevenlabs_api_key[-5:]}")
+            from elevenlabs import set_api_key
+            set_api_key(self.elevenlabs_api_key)
+            print("ElevenLabs API key set successfully")
+        except Exception as e:
+            print(f"Note: Could not set ElevenLabs API key: {e}")
+            print("Will verify API key when needed")
         
         # Add flag to control speech interruption
         self.is_speaking = False
@@ -2616,35 +2627,77 @@ class ConversationRobot:
         try:
             print("Verifying ElevenLabs API key...")
             
-            # Try to access a simple endpoint that requires minimal permissions
+            # Try multiple endpoints to verify the API key
             import requests
+            
+            # Properly formatted headers according to ElevenLabs docs
             headers = {
                 "xi-api-key": self.elevenlabs_api_key
             }
             
-            # Test with the models endpoint which typically requires minimal permissions
-            url = "https://api.elevenlabs.io/v1/models"
+            # First try the voices endpoint which should work for all accounts
+            url = "https://api.elevenlabs.io/v1/voices"
             
+            print("Testing ElevenLabs API with voices endpoint...")
             response = requests.get(url, headers=headers)
             
             if response.status_code == 200:
-                print("ElevenLabs API key verified successfully")
+                print("✅ ElevenLabs API key verified successfully with voices endpoint")
                 # Reset the failed flag since the key is working
                 self.elevenlabs_failed = False
+                
+                # Get available voices for the account
+                try:
+                    voices_data = response.json()
+                    if "voices" in voices_data:
+                        voices = voices_data["voices"]
+                        if voices:
+                            print(f"✅ Found {len(voices)} voices available for your account")
+                            # Store the voices for later use
+                            self.elevenlabs_voices = voices
+                except Exception as e:
+                    print(f"⚠️ Error parsing voices response: {e}")
+                
                 return True
             else:
-                print(f"ElevenLabs API verification failed: Status {response.status_code}")
-                print(f"Response: {response.text}")
+                print(f"⚠️ ElevenLabs voices endpoint test failed: Status {response.status_code}")
                 
-                # If unauthorized, mark the API as failed
-                if response.status_code == 401:
-                    self.elevenlabs_failed = True
-                    print("ElevenLabs API key is invalid or expired")
+                # Try models endpoint as fallback
+                url = "https://api.elevenlabs.io/v1/models"
+                print("Trying models endpoint as fallback...")
+                response = requests.get(url, headers=headers)
                 
-                return False
+                if response.status_code == 200:
+                    print("✅ ElevenLabs API key verified successfully with models endpoint")
+                    self.elevenlabs_failed = False
+                    return True
+                else:
+                    print(f"⚠️ ElevenLabs models endpoint test failed: Status {response.status_code}")
+                    
+                    # Try user info endpoint as last resort
+                    url = "https://api.elevenlabs.io/v1/user"
+                    print("Trying user endpoint as last resort...")
+                    response = requests.get(url, headers=headers)
+                    
+                    if response.status_code == 200:
+                        print("✅ ElevenLabs API key verified successfully with user endpoint")
+                        self.elevenlabs_failed = False
+                        return True
+                    else:
+                        print(f"⚠️ All ElevenLabs API tests failed: Status {response.status_code}")
+                        print(f"Response: {response.text}")
+                        
+                        # If unauthorized on all endpoints, mark the API as failed
+                        if response.status_code == 401:
+                            self.elevenlabs_failed = True
+                            print("⚠️ ElevenLabs API key is invalid or expired")
+                            print("Will use fallback TTS system")
+                        
+                        return False
                 
         except Exception as e:
-            print(f"Error verifying ElevenLabs API: {e}")
+            print(f"⚠️ Error verifying ElevenLabs API: {e}")
+            print("Will use fallback TTS system if needed")
             return False
     
     def elevenlabs_tts(self, text, voice_id=None):
@@ -2663,164 +2716,189 @@ class ConversationRobot:
         try:
             print(f"Generating speech with ElevenLabs client for text: {text[:50]}...")
             
-            # Make a direct HTTP request using the documented authentication method
+            # IMPROVED DIRECT API REQUEST - Most reliable method
             try:
                 import requests
+                
+                # Properly formatted headers according to ElevenLabs docs
                 headers = {
                     "xi-api-key": self.elevenlabs_api_key,
                     "Content-Type": "application/json",
-                    "Accept": "audio/mpeg"  # Explicitly request MP3 format
+                    "Accept": "audio/mpeg"
                 }
                 
-                url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+                # Use the correct endpoint from the documentation
+                url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
                 
+                # Prepare the request data according to the API docs
                 data = {
                     "text": text,
-                    "model_id": self.elevenlabs_model_id,
+                    "model_id": "eleven_monolingual_v1",  # Use the standard model
                     "voice_settings": {
                         "stability": 0.5,
                         "similarity_boost": 0.5
-                    }
+                    },
+                    "output_format": "mp3_44100_128"
                 }
                 
-                print("Making direct API request to ElevenLabs")
-                response = requests.post(url, json=data, headers=headers)
+                print("Making direct API request to ElevenLabs using streaming endpoint")
+                response = requests.post(url, json=data, headers=headers, stream=True)
                 
                 if response.status_code == 200:
-                    print("Successfully received audio from ElevenLabs API")
-                    audio_content = response.content
+                    print("Successfully received audio stream from ElevenLabs API")
                     
-                    # Verify we actually got audio data (should be binary/bytes)
+                    # Collect all chunks from the streaming response
+                    audio_content = bytearray()
+                    for chunk in response.iter_content(chunk_size=1024):
+                        if chunk:
+                            audio_content.extend(chunk)
+                    
+                    audio_content = bytes(audio_content)
+                    
+                    # Verify we actually got audio data
                     if len(audio_content) > 1000:  # Audio files should be at least 1KB
-                        print(f"Received {len(audio_content)} bytes of audio data")
+                        print(f"✅ Received {len(audio_content)} bytes of audio data")
                         return audio_content
                     else:
-                        print(f"Warning: Received suspiciously small audio ({len(audio_content)} bytes)")
+                        print(f"⚠️ Warning: Received suspiciously small audio ({len(audio_content)} bytes)")
                         # Continue to try other methods
                 else:
-                    print(f"ElevenLabs API error: Status {response.status_code}")
+                    print(f"⚠️ ElevenLabs API error: Status {response.status_code}")
                     print(f"Response: {response.text}")
                     
-                    # Check for specific error types
-                    try:
-                        error_data = response.json()
-                        if "detail" in error_data:
-                            detail = error_data["detail"]
-                            if "status" in detail and detail["status"] == "missing_permissions":
-                                print(f"Permission error: {detail.get('message', 'Unknown permission error')}")
-                                if "text_to_speech" in str(detail):
-                                    self.elevenlabs_failed = True
-                                    return self.fallback_tts(text)
-                    except:
-                        pass
+                    # If we get a 401 error, try the non-streaming endpoint as fallback
+                    if response.status_code == 401:
+                        print("Trying non-streaming endpoint as fallback...")
+                        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+                        response = requests.post(url, json=data, headers=headers)
                         
-                    # Try the client library as fallback
-                    print("Trying alternative method...")
-                
-            except ImportError:
-                print("Requests library not available, falling back to client library")
-                # Fall back to using the client library if requests is not available
+                        if response.status_code == 200:
+                            print("✅ Successfully received audio from non-streaming endpoint")
+                            audio_content = response.content
+                            if len(audio_content) > 1000:
+                                return audio_content
             except Exception as e:
-                print(f"Direct API request failed: {e}")
+                print(f"⚠️ Direct API request failed: {e}")
                 print("Trying client library instead...")
             
-            # Create ElevenLabs client with the API key
-            client = ElevenLabs(api_key=self.elevenlabs_api_key)
-            
-            # Generate audio using the client directly
+            # FALLBACK METHOD 1: Using the official ElevenLabs Python client
             try:
-                # First try the direct method that returns bytes directly
-                audio_data = client.text_to_speech.generate(
+                print("Trying with official ElevenLabs Python client...")
+                from elevenlabs import generate, set_api_key
+                
+                # Set the API key for the official client
+                set_api_key(self.elevenlabs_api_key)
+                
+                # Generate audio using the official client
+                audio_data = generate(
                     text=text,
-                    voice_id=voice_id,
-                    model_id=self.elevenlabs_model_id,
-                    voice_settings={
-                        "stability": 0.5,
-                        "similarity_boost": 0.5
-                    },
-                    output_format="mp3"
+                    voice=voice_id,
+                    model="eleven_monolingual_v1"
                 )
                 
-                # If this succeeds, audio_data should be bytes already
-                if isinstance(audio_data, bytes):
-                    print("Successfully generated speech with ElevenLabs client")
+                if audio_data and len(audio_data) > 1000:
+                    print("✅ Successfully generated speech with official ElevenLabs client")
                     return audio_data
-                
-                # If we got here, we need to handle a different return type
-                print(f"Using alternative handling for response type: {type(audio_data)}")
-                
-            except (AttributeError, TypeError) as e:
-                print(f"Using alternative API method: {e}")
-                # Fall back to the streaming method
-                pass
-                
-            # Fall back to the streaming method that returns a generator
-            audio_generator = client.text_to_speech.convert(
-                text=text,
-                voice_id=voice_id,
-                model_id=self.elevenlabs_model_id,
-                voice_settings={
-                    "stability": 0.5,
-                    "similarity_boost": 0.5
-                }
-            )
-            
-            # Convert the generator to bytes
-            audio_chunks = bytearray()
-            try:
-                # First try treating it as a regular generator
-                for chunk in audio_generator:
-                    if isinstance(chunk, bytes):
-                        audio_chunks.extend(chunk)
-                    else:
-                        # If it's not bytes, try to convert it
-                        audio_chunks.extend(bytes(chunk))
-            except TypeError:
-                # If audio_generator is not directly iterable, it might be a response object
-                # Try getting content or read() method
-                if hasattr(audio_generator, 'content'):
-                    audio_chunks.extend(audio_generator.content)
-                elif hasattr(audio_generator, 'read'):
-                    audio_chunks.extend(audio_generator.read())
-                elif hasattr(audio_generator, 'get_bytes'):
-                    audio_chunks.extend(audio_generator.get_bytes())
                 else:
-                    # As a last resort, try converting the entire object
-                    audio_chunks.extend(bytes(audio_generator))
+                    print("⚠️ Official client returned no audio data")
+            except ImportError:
+                print("Official elevenlabs package not available, trying alternative client")
+            except Exception as e:
+                print(f"⚠️ Error with official client: {e}")
             
-            # Convert to bytes
-            audio_content = bytes(audio_chunks)
+            # FALLBACK METHOD 2: Using the ElevenLabs client from the import
+            try:
+                print("Trying with ElevenLabs client...")
+                client = ElevenLabs(api_key=self.elevenlabs_api_key)
+                
+                # Try the text_to_speech.generate method
+                try:
+                    audio_data = client.text_to_speech.generate(
+                        text=text,
+                        voice_id=voice_id,
+                        model_id="eleven_monolingual_v1",
+                        output_format="mp3"
+                    )
+                    
+                    if isinstance(audio_data, bytes) and len(audio_data) > 1000:
+                        print("✅ Successfully generated speech with ElevenLabs client")
+                        return audio_data
+                except (AttributeError, TypeError) as e:
+                    print(f"⚠️ Client method error: {e}")
+                
+                # Try the streaming method that returns a generator
+                try:
+                    print("Trying streaming method...")
+                    audio_generator = client.text_to_speech.convert(
+                        text=text,
+                        voice_id=voice_id,
+                        model_id="eleven_monolingual_v1"
+                    )
+                    
+                    # Convert the generator to bytes
+                    audio_chunks = bytearray()
+                    
+                    # Handle different return types
+                    if hasattr(audio_generator, 'iter_content'):
+                        # Response object with iter_content
+                        for chunk in audio_generator.iter_content(chunk_size=1024):
+                            if chunk:
+                                audio_chunks.extend(chunk)
+                    elif hasattr(audio_generator, 'content'):
+                        # Response object with content
+                        audio_chunks.extend(audio_generator.content)
+                    elif hasattr(audio_generator, 'read'):
+                        # File-like object
+                        audio_chunks.extend(audio_generator.read())
+                    else:
+                        # Try as generator
+                        try:
+                            for chunk in audio_generator:
+                                if isinstance(chunk, bytes):
+                                    audio_chunks.extend(chunk)
+                                else:
+                                    audio_chunks.extend(bytes(chunk))
+                        except TypeError:
+                            print("⚠️ Could not iterate over audio generator")
+                    
+                    # Convert to bytes
+                    audio_content = bytes(audio_chunks)
+                    
+                    if len(audio_content) > 1000:
+                        print(f"✅ Successfully generated {len(audio_content)} bytes of audio")
+                        return audio_content
+                    else:
+                        print(f"⚠️ Generated audio too small: {len(audio_content)} bytes")
+                except Exception as e:
+                    print(f"⚠️ Streaming method failed: {e}")
+            except Exception as e:
+                print(f"⚠️ ElevenLabs client error: {e}")
             
-            # Make sure we actually got something substantial (audio files should be at least 1KB)
-            if len(audio_content) < 1000:
-                print(f"Warning: Generated audio seems too small ({len(audio_content)} bytes)")
-                return self.fallback_tts(text)
-            
-            print("Successfully generated speech with ElevenLabs client")
-            return audio_content
+            # If we got here, all ElevenLabs methods failed
+            print("⚠️ All ElevenLabs methods failed, using fallback TTS")
+            self.elevenlabs_failed = True
+            return self.fallback_tts(text)
                 
         except Exception as e:
             error_str = str(e)
-            print(f"Exception generating speech with ElevenLabs: {e}")
+            print(f"⚠️ Exception generating speech with ElevenLabs: {e}")
             
             # Check if this is a permissions or authentication issue
             if ("401" in error_str or 
                 "status_code: 401" in error_str or 
                 "missing_permissions" in error_str or 
                 "Unauthorized" in error_str or
+                "detected_unusual_activity" in error_str or
                 "text_to_speech" in error_str):
                 
-                print("\nNOTE: Your ElevenLabs API key doesn't have the required text_to_speech permission.")
-                print("This is common for free accounts or if your subscription has expired.")
+                print("\n⚠️ ElevenLabs API authentication issue detected.")
+                print("This could be due to an invalid API key or account limitations.")
                 print("Switching to fallback TTS system for the rest of this session.")
                 
                 # Mark ElevenLabs as failed to avoid repeated attempts
                 self.elevenlabs_failed = True
-                
-                # Use fallback TTS
-                return self.fallback_tts(text)
             
-            # For other errors, still try fallback
+            # For all errors, use fallback
             return self.fallback_tts(text)
     
     def fallback_tts(self, text):
@@ -4430,7 +4508,7 @@ def check_env_file():
         # Set essential environment variables
         os.environ["PORCUPINE_ACCESS_KEY"] = "qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag=="
         os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
-        os.environ["ELEVENLABS_API_KEY"] = "sk_66dccabc23a81c5c5fc8ca593063faab9040dfea9cdb59a0"
+        os.environ["ELEVENLABS_API_KEY"] = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
         os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
         os.environ["WAKE_WORD"] = "alexa"
         os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
@@ -4459,7 +4537,7 @@ def check_env_file():
                 f.write("""# API Keys
 PORCUPINE_ACCESS_KEY=qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag==
 GEMINI_API_KEY=AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8
-ELEVENLABS_API_KEY=sk_66dccabc23a81c5c5fc8ca593063faab9040dfea9cdb59a0
+ELEVENLABS_API_KEY=sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 
 # Wake word settings
