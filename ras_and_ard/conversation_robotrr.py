@@ -2873,6 +2873,7 @@ class ConversationRobot:
             if not self.has_fallback_tts or self.tts_engine is None:
                 # Try to initialize pyttsx3 again
                 try:
+                    print("Initializing fallback TTS engine...")
                     self.tts_engine = pyttsx3.init()
                     self.tts_engine.setProperty('rate', self._parse_env_int("VOICE_RATE", 150))
                     self.tts_engine.setProperty('volume', self._parse_env_float("VOICE_VOLUME", 0.8))
@@ -2888,25 +2889,97 @@ class ConversationRobot:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
                 temp_file_path = temp_file.name
             
+            print(f"Audio saved to {temp_file_path}")
+            
             # Save speech to a temporary WAV file
-            self.tts_engine.save_to_file(text, temp_file_path)
-            self.tts_engine.runAndWait()
+            try:
+                self.tts_engine.save_to_file(text, temp_file_path)
+                self.tts_engine.runAndWait()
+            except Exception as e:
+                print(f"Error saving speech to file: {e}")
+                # Try direct speech as fallback
+                try:
+                    print("Trying direct speech instead...")
+                    self.tts_engine.say(text)
+                    self.tts_engine.runAndWait()
+                    # Since we used direct speech, we don't have audio data to return
+                    # But we'll create a dummy file so the rest of the code works
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(b'RIFF' + b'\x00' * 100)  # Dummy WAV header
+                except Exception as e2:
+                    print(f"Direct speech also failed: {e2}")
+                    return None
             
             # Read the file back as bytes
-            with open(temp_file_path, 'rb') as f:
-                audio_data = f.read()
+            try:
+                with open(temp_file_path, 'rb') as f:
+                    audio_data = f.read()
+                print(f"Read {len(audio_data)} bytes of audio data")
+            except Exception as e:
+                print(f"Error reading audio file: {e}")
+                return None
             
             # Clean up temporary file
             try:
                 os.unlink(temp_file_path)
-            except:
-                pass
+            except Exception as e:
+                print(f"Error removing temp file: {e}")
+            
+            # For Raspberry Pi, try to play the audio directly
+            if platform.system() == 'Linux':
+                try:
+                    # Check if this is a Raspberry Pi
+                    is_raspberry_pi = False
+                    try:
+                        with open('/proc/cpuinfo', 'r') as f:
+                            if 'Raspberry Pi' in f.read():
+                                is_raspberry_pi = True
+                    except:
+                        pass
+                    
+                    if is_raspberry_pi:
+                        print("On Raspberry Pi - trying to play audio directly...")
+                        # Save to a new temporary file
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as direct_file:
+                            direct_path = direct_file.name
+                            direct_file.write(audio_data)
+                        
+                        # Try multiple players
+                        players = [
+                            f'aplay "{direct_path}"',
+                            f'mpg123 "{direct_path}"',
+                            f'mplayer "{direct_path}"',
+                            f'ffplay -nodisp -autoexit "{direct_path}"'
+                        ]
+                        
+                        for player in players:
+                            print(f"Trying to play with: {player}")
+                            exit_code = os.system(player)
+                            if exit_code == 0:
+                                print(f"Successfully played audio with {player}")
+                                break
+                        
+                        # Clean up
+                        try:
+                            os.unlink(direct_path)
+                        except:
+                            pass
+                except Exception as e:
+                    print(f"Error playing audio directly: {e}")
             
             print("Successfully generated speech using fallback TTS")
             return audio_data
             
         except Exception as e:
             print(f"Error in fallback TTS: {e}")
+            # Last resort - try direct speech
+            try:
+                if self.tts_engine:
+                    print("Attempting direct speech as last resort...")
+                    self.tts_engine.say(text)
+                    self.tts_engine.runAndWait()
+            except:
+                pass
             return None
     
     def play_audio(self, audio_data):
@@ -2921,21 +2994,60 @@ class ConversationRobot:
                 temp_file.write(audio_data)
                 temp_file_path = temp_file.name
             
+            print(f"Audio saved to {temp_file_path}")
+            
             # Play the audio file using the system's default player
             if platform.system() == 'Windows':
-                os.system(f'start {temp_file_path}')
+                try:
+                    # First try with start command
+                    os.system(f'start {temp_file_path}')
+                except Exception as e1:
+                    print(f"Error with start command: {e1}")
+                    # Try alternative Windows playback
+                    try:
+                        import winsound
+                        winsound.PlaySound(temp_file_path, winsound.SND_FILENAME)
+                    except Exception as e2:
+                        print(f"Error with winsound: {e2}")
             elif platform.system() == 'Darwin':  # macOS
                 os.system(f'afplay {temp_file_path}')
             else:  # Linux and others
-                os.system(f'mpg123 {temp_file_path}')
+                # Try multiple players in order of preference
+                players = [
+                    f'mpg123 "{temp_file_path}"',
+                    f'mplayer "{temp_file_path}"',
+                    f'aplay "{temp_file_path}"',
+                    f'ffplay -nodisp -autoexit "{temp_file_path}"',
+                    f'python3 -m playsound "{temp_file_path}"'
+                ]
+                
+                success = False
+                for player_cmd in players:
+                    print(f"Trying to play audio with: {player_cmd}")
+                    exit_code = os.system(player_cmd)
+                    if exit_code == 0:
+                        print(f"Successfully played audio with: {player_cmd}")
+                        success = True
+                        break
+                    else:
+                        print(f"Failed to play with {player_cmd.split()[0]}, trying next player...")
+                
+                if not success:
+                    print("All audio players failed. Check your audio setup.")
+                    # Try to use the fallback TTS engine directly
+                    if self.tts_engine:
+                        print("Using direct TTS engine as last resort")
+                        # Extract text from the temp file name for debugging
+                        self.tts_engine.say("Audio playback failed, but TTS is working")
+                        self.tts_engine.runAndWait()
             
             # Clean up the temporary file after a delay
             def cleanup_temp_file():
                 time.sleep(5)  # Wait for the audio to finish playing
                 try:
                     os.unlink(temp_file_path)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Error removing temp file: {e}")
             
             cleanup_thread = threading.Thread(target=cleanup_temp_file)
             cleanup_thread.daemon = True
@@ -2947,6 +3059,14 @@ class ConversationRobot:
             return True
         except Exception as e:
             print(f"Error playing audio: {e}")
+            # As a last resort, try direct TTS
+            try:
+                if self.tts_engine:
+                    print("Using direct TTS engine after playback error")
+                    self.tts_engine.say("Audio playback failed, but TTS is working")
+                    self.tts_engine.runAndWait()
+            except:
+                pass
             return False
     
     def ensure_fer_dependencies(self):
@@ -3474,14 +3594,45 @@ class ConversationRobot:
                 except:
                     pass
             
+            # Make sure pyserial is properly imported
+            try:
+                import serial
+                print("Serial library imported successfully")
+            except ImportError:
+                print("Error importing serial library. Trying to install pyserial...")
+                try:
+                    import subprocess
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyserial"])
+                    import serial
+                    print("Successfully installed and imported pyserial")
+                except Exception as e:
+                    print(f"Failed to install pyserial: {e}")
+                    print("Arduino connection will not be available")
+                    return False
+            
             # List available serial ports to help users
             self.list_serial_ports()
             
-            # Auto-detect Arduino port
-            arduino_port = self.find_arduino_port()
-            if arduino_port:
-                self.arduino_port = arduino_port
-                print(f"Auto-detected Arduino port: {arduino_port}")
+            # For Raspberry Pi, try to find Arduino using the by-id path which is more stable
+            if is_raspberry_pi:
+                print("Looking for Arduino using stable by-id path...")
+                try:
+                    by_id_path = "/dev/serial/by-id"
+                    if os.path.exists(by_id_path):
+                        arduino_paths = [os.path.join(by_id_path, f) for f in os.listdir(by_id_path) 
+                                        if "arduino" in f.lower()]
+                        if arduino_paths:
+                            self.arduino_port = arduino_paths[0]
+                            print(f"Found Arduino at stable path: {self.arduino_port}")
+                except Exception as e:
+                    print(f"Error looking for Arduino in by-id: {e}")
+            
+            # Auto-detect Arduino port if we haven't found it yet
+            if not is_raspberry_pi or not self.arduino_port.startswith("/dev/serial/by-id"):
+                arduino_port = self.find_arduino_port()
+                if arduino_port:
+                    self.arduino_port = arduino_port
+                    print(f"Auto-detected Arduino port: {arduino_port}")
             
             # Check if port exists before trying to connect (for Linux/Raspberry Pi)
             if platform.system() == 'Linux' and not os.path.exists(self.arduino_port):
@@ -3492,6 +3643,9 @@ class ConversationRobot:
             
             # Try to connect with more robust error handling
             try:
+                # Make sure we're using the correct serial module
+                import serial
+                
                 self.arduino_serial = serial.Serial(
                     port=self.arduino_port,
                     baudrate=self.arduino_baud_rate,
@@ -3535,6 +3689,21 @@ class ConversationRobot:
                         print("1. Run: sudo usermod -a -G dialout $USER")
                         print("2. Log out and log back in")
                         print("3. If that doesn't work, try: sudo chmod 666 " + self.arduino_port)
+                        # Try to fix permissions automatically
+                        try:
+                            os.system(f"sudo chmod 666 {self.arduino_port}")
+                            print(f"Attempted to fix permissions on {self.arduino_port}")
+                            # Try connecting again
+                            self.arduino_serial = serial.Serial(
+                                port=self.arduino_port,
+                                baudrate=self.arduino_baud_rate,
+                                timeout=1,
+                                write_timeout=1
+                            )
+                            print("Connection successful after fixing permissions!")
+                            return True
+                        except:
+                            pass
                 else:
                     print(f"Serial exception: {se}")
                     
@@ -3629,6 +3798,22 @@ class ConversationRobot:
         """Try connecting to alternative common Arduino ports with enhanced Raspberry Pi support"""
         common_ports = []
         
+        # Make sure serial is properly imported
+        try:
+            import serial
+            print("Serial library imported successfully for alternative ports")
+        except ImportError:
+            print("Error importing serial library. Trying to install pyserial...")
+            try:
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "pyserial"])
+                import serial
+                print("Successfully installed and imported pyserial")
+            except Exception as e:
+                print(f"Failed to install pyserial: {e}")
+                print("Arduino connection will not be available")
+                return False
+        
         # Check if we're on a Raspberry Pi
         is_raspberry_pi = False
         if platform.system() == 'Linux':
@@ -3640,11 +3825,29 @@ class ConversationRobot:
             except:
                 pass
         
+        # First check for Arduino devices in /dev/serial/by-id which are more reliable
+        if is_raspberry_pi:
+            try:
+                by_id_path = "/dev/serial/by-id"
+                if os.path.exists(by_id_path):
+                    print("Checking /dev/serial/by-id for Arduino devices...")
+                    arduino_paths = []
+                    for f in os.listdir(by_id_path):
+                        if any(keyword in f.lower() for keyword in ["arduino", "uno", "mega", "leonardo"]):
+                            full_path = os.path.join(by_id_path, f)
+                            arduino_paths.append(full_path)
+                            print(f"Found Arduino device at: {full_path}")
+                    
+                    # Add these to the beginning of our ports to try
+                    common_ports.extend(arduino_paths)
+            except Exception as e:
+                print(f"Error checking /dev/serial/by-id: {e}")
+        
         # Add common ports based on platform
         if platform.system() == 'Linux':
             if is_raspberry_pi:
                 # Prioritized list of common Raspberry Pi Arduino ports
-                common_ports = [
+                pi_ports = [
                     '/dev/ttyACM0',  # Most common for Arduino Uno/Mega on Pi
                     '/dev/ttyACM1',
                     '/dev/ttyUSB0',  # Common for Arduino with CH340/CP2102 chip
@@ -3653,6 +3856,9 @@ class ConversationRobot:
                     '/dev/serial0',  # Symlink to serial port on newer Pi
                     '/dev/ttyS0'     # Software serial port
                 ]
+                
+                # Add these to our list of ports to try
+                common_ports.extend(pi_ports)
                 
                 # Try to detect newly connected USB devices
                 try:
@@ -3678,12 +3884,15 @@ class ConversationRobot:
                     print(f"Could not check dmesg for recent connections: {e}")
             else:
                 # Standard Linux ports
-                common_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyAMA0']
+                linux_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyAMA0']
+                common_ports.extend(linux_ports)
         elif platform.system() == 'Windows':
             # Common Windows Arduino ports
-            common_ports = ['COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8']
+            win_ports = ['COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8']
+            common_ports.extend(win_ports)
         else:  # macOS
-            common_ports = ['/dev/cu.usbmodem1401', '/dev/cu.usbserial', '/dev/tty.usbmodem']
+            mac_ports = ['/dev/cu.usbmodem1401', '/dev/cu.usbserial', '/dev/tty.usbmodem']
+            common_ports.extend(mac_ports)
         
         # Remove the port we already tried
         if self.arduino_port in common_ports:
@@ -3700,6 +3909,7 @@ class ConversationRobot:
                     continue
                 
                 # Try to connect with timeout
+                import serial  # Make sure we're using the correct serial module
                 self.arduino_serial = serial.Serial(port, self.arduino_baud_rate, timeout=1)
                 time.sleep(2)  # Wait for Arduino to reset
                 
@@ -3715,6 +3925,28 @@ class ConversationRobot:
                 print(f"Could not connect to {port}: {e}")
         
         if is_raspberry_pi:
+            # Try the approach from the user's example code
+            try:
+                print("\nTrying user-provided approach for Arduino connection...")
+                import serial
+                arduino_port = '/dev/ttyACM0'  # Default port to try
+                baud_rate = 9600
+                
+                arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+                time.sleep(2)  # Wait for connection to stabilize
+                
+                # Send a test command
+                arduino.write("idle\n".encode('utf-8'))
+                print(f"✓ Sent test command to {arduino_port}")
+                
+                # Update our connection
+                self.arduino_serial = arduino
+                self.arduino_port = arduino_port
+                print(f"Successfully connected to Arduino on {arduino_port} using alternative method")
+                return True
+            except Exception as e:
+                print(f"Alternative approach failed: {e}")
+            
             print("\nTroubleshooting tips for Raspberry Pi:")
             print("1. Make sure the Arduino is connected via USB")
             print("2. Try running 'lsusb' to see if Arduino is detected")
@@ -3723,6 +3955,8 @@ class ConversationRobot:
             print("   sudo usermod -a -G dialout $USER")
             print("   (logout and login again for changes to take effect)")
             print("5. Try unplugging and reconnecting the Arduino")
+            print("6. Try the following command to fix permissions:")
+            print("   sudo chmod 666 /dev/ttyACM0")
         
         print("Could not find Arduino on any common ports")
         return False
@@ -3880,11 +4114,46 @@ class ConversationRobot:
         # Make sure message ends with newline for Arduino's Serial.readStringUntil('\n')
         if not message.endswith('\n'):
             message += '\n'
+        
+        # Make sure serial is properly imported
+        try:
+            import serial
+        except ImportError:
+            print("Error importing serial library. Arduino communication not available.")
+            return False
             
         if not self.arduino_serial:
             print("Arduino connection not established, attempting to reconnect...")
             if not self.setup_arduino_connection():
                 print("Could not establish Arduino connection to send message")
+                
+                # If we're on a Raspberry Pi, try the direct approach from the user's example
+                if platform.system() == 'Linux':
+                    try:
+                        print("Trying direct Arduino connection as last resort...")
+                        arduino_port = '/dev/ttyACM0'  # Default port to try
+                        baud_rate = 9600
+                        
+                        arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+                        time.sleep(2)  # Wait for connection to stabilize
+                        
+                        # Send the actual message
+                        print(f"Sending message to Arduino: {message.strip()}")
+                        arduino.write(message.encode('utf-8'))
+                        print(f"✓ Sent message directly to {arduino_port}")
+                        
+                        # Update our connection
+                        self.arduino_serial = arduino
+                        self.arduino_port = arduino_port
+                        return True
+                    except Exception as e:
+                        print(f"Direct connection failed: {e}")
+                
+                # If we get here, we couldn't connect
+                print("Arduino connection failed - robot movements will not work")
+                
+                # Continue with TTS functionality even if Arduino fails
+                print("Continuing with TTS functionality only")
                 return False
         
         # Maximum retry attempts
@@ -3894,18 +4163,29 @@ class ConversationRobot:
         while retry_count < max_retries:
             try:
                 # Clear any pending data in the buffer
-                while self.arduino_serial.in_waiting:
-                    self.arduino_serial.read(self.arduino_serial.in_waiting)
+                try:
+                    while self.arduino_serial.in_waiting:
+                        self.arduino_serial.read(self.arduino_serial.in_waiting)
+                except Exception as e:
+                    print(f"Error clearing buffer: {e}")
                 
                 print(f"Sending message to Arduino: {message.strip()}")
                 self.arduino_serial.write(message.encode())
-                self.arduino_serial.flush()  # Ensure data is sent immediately
+                
+                try:
+                    self.arduino_serial.flush()  # Ensure data is sent immediately
+                except Exception as e:
+                    print(f"Error flushing buffer (non-critical): {e}")
+                    
                 time.sleep(0.2)  # Small delay to ensure message is sent and processed
                 
                 # Try to read response if Arduino sends any
-                if self.arduino_serial.in_waiting:
-                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
-                    print(f"Arduino response: {response}")
+                try:
+                    if self.arduino_serial.in_waiting:
+                        response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
+                        print(f"Arduino response: {response}")
+                except Exception as e:
+                    print(f"Error reading response (non-critical): {e}")
                 
                 return True
             except serial.SerialException as e:
@@ -3928,6 +4208,8 @@ class ConversationRobot:
                 time.sleep(0.5)
         
         print(f"Failed to send message to Arduino after {max_retries} attempts")
+        # Continue with TTS functionality even if Arduino fails
+        print("Continuing with TTS functionality only")
         return False
     
     def verify_lemonfox_api(self):
