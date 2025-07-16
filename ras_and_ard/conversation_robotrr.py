@@ -20,6 +20,7 @@ from collections import deque
 import requests
 import tempfile
 import serial  # Add import for serial communication
+import io  # For handling byte streams with Lemonfox API
 
 # Import ElevenLabs client
 try:
@@ -52,7 +53,8 @@ os.environ["MEMORY_FILE"] = "robot_memory.json"
 os.environ["MEMORY_EXCHANGES_LIMIT"] = "5"
 os.environ["VOICE_RATE"] = "150"
 os.environ["VOICE_VOLUME"] = "0.8"
-os.environ["SPEECH_RECOGNITION"] = "google"
+os.environ["SPEECH_RECOGNITION"] = "lemonfox"  # Using Lemonfox Whisper API
+os.environ["LEMONFOX_API_KEY"] = "APFEQBqCJrLvMqrMUT3TIKpB3veCuSkp"  # Lemonfox API key
 os.environ["SILENCE_THRESHOLD"] = "0.8"
 os.environ["SPEECH_TIMEOUT"] = "1.5"
 os.environ["PHRASE_TIMEOUT"] = "5.0"
@@ -1319,7 +1321,7 @@ class ConversationRobot:
             return False
     
     def listen_for_speech(self):
-        """Listen for speech input with optimized response time and quick silence detection"""
+        """Listen for speech input and transcribe using Lemonfox Whisper API"""
         print("Listening for your question... (speak now)")
         
         # Play a "ready to listen" beep (different tone)
@@ -1353,6 +1355,9 @@ class ConversationRobot:
         silence_threshold = float(os.getenv("SILENCE_THRESHOLD", "1.0"))  # Seconds of silence to stop listening
         speech_timeout = float(os.getenv("SPEECH_TIMEOUT", "2.0"))  # Max seconds to wait for speech to start
         phrase_timeout = float(os.getenv("PHRASE_TIMEOUT", "5.0"))  # Max seconds for a phrase
+        
+        # Get Lemonfox API key
+        lemonfox_api_key = self._parse_env_str("LEMONFOX_API_KEY", "APFEQBqCJrLvMqrMUT3TIKpB3veCuSkp")
         
         with sr.Microphone() as source:
             # Minimal ambient noise adjustment (just 0.1 seconds)
@@ -1391,7 +1396,7 @@ class ConversationRobot:
                         cv2.imshow("Emotion Detection", frame)
                         cv2.waitKey(1)
                 
-                print("Processing speech...")
+                print("Processing speech with Lemonfox Whisper API...")
                 
                 # Check audio duration - if it's too short, it might be noise
                 audio_data = np.frombuffer(audio.get_raw_data(), dtype=np.int16)
@@ -1402,43 +1407,88 @@ class ConversationRobot:
                     return None
                 
                 # Get speech recognition method from environment
-                speech_recognition_method = os.getenv("SPEECH_RECOGNITION", "google").lower()
+                speech_recognition_method = os.getenv("SPEECH_RECOGNITION", "lemonfox").lower()
                 
-                if speech_recognition_method == "whisper":
+                # Use Lemonfox Whisper API
+                if speech_recognition_method == "lemonfox":
                     try:
-                        import whisper
-                        # Use tiny model for fastest processing
-                        model = whisper.load_model("tiny")
+                        # Save audio to temporary file for API upload
+                        temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+                        temp_audio_path = temp_audio_file.name
+                        temp_audio_file.close()
                         
-                        # Save audio to temporary file and process
-                        with open("temp_audio.wav", "wb") as f:
+                        with open(temp_audio_path, "wb") as f:
                             f.write(audio.get_wav_data())
                         
-                        # Use faster options for Whisper
-                        result = model.transcribe(
-                            "temp_audio.wav", 
-                            fp16=False,  # Faster on CPU
-                            language="en",  # Specify language for faster processing
-                            without_timestamps=True  # Don't need timestamps
-                        )
+                        # Prepare API request
+                        url = "https://api.lemonfox.ai/v1/audio/transcriptions"
+                        headers = {
+                            "Authorization": f"Bearer {lemonfox_api_key}"
+                        }
+                        data = {
+                            "language": "english",
+                            "response_format": "json"
+                        }
+                        
+                        # Open the file for upload
+                        files = {
+                            "file": open(temp_audio_path, "rb")
+                        }
+                        
+                        # Send request to Lemonfox API
+                        print("Sending audio to Lemonfox API...")
+                        response = requests.post(url, headers=headers, files=files, data=data)
                         
                         # Clean up temp file
-                        os.remove("temp_audio.wav")
+                        files["file"].close()
+                        os.unlink(temp_audio_path)
                         
-                        text = result["text"].strip()
-                        print(f"You said (Whisper): {text}")
-                        return text
-                    except ImportError:
-                        print("Whisper not available, using Google")
-                        speech_recognition_method = "google"
+                        # Check response
+                        if response.status_code == 200:
+                            result = response.json()
+                            if "text" in result:
+                                text = result["text"].strip()
+                                print(f"You said (Lemonfox): {text}")
+                                return text
+                            else:
+                                print(f"Unexpected response format from Lemonfox API: {result}")
+                                # Fall back to Google if available
+                                try:
+                                    text = self.recognizer.recognize_google(audio)
+                                    print(f"Falling back to Google: {text}")
+                                    return text
+                                except:
+                                    return None
+                        else:
+                            print(f"Error from Lemonfox API: Status {response.status_code}")
+                            print(f"Response: {response.text}")
+                            
+                            # Fall back to Google if available
+                            try:
+                                text = self.recognizer.recognize_google(audio)
+                                print(f"Falling back to Google: {text}")
+                                return text
+                            except:
+                                return None
                     except Exception as e:
-                        print(f"Whisper error, falling back to Google: {e}")
-                        speech_recognition_method = "google"
+                        print(f"Error using Lemonfox API: {e}")
+                        # Fall back to Google if available
+                        try:
+                            text = self.recognizer.recognize_google(audio)
+                            print(f"Falling back to Google: {text}")
+                            return text
+                        except:
+                            return None
                 
-                if speech_recognition_method == "google":
-                    text = self.recognizer.recognize_google(audio)
-                    print(f"You said (Google): {text}")
-                    return text
+                # Fallback to Google if Lemonfox is not selected
+                else:
+                    try:
+                        text = self.recognizer.recognize_google(audio)
+                        print(f"You said (Google): {text}")
+                        return text
+                    except Exception as e:
+                        print(f"Google speech recognition error: {e}")
+                        return None
                     
             except sr.WaitTimeoutError:
                 print("No speech detected within timeout period.")
@@ -2206,11 +2256,19 @@ class ConversationRobot:
         
         # Verify ElevenLabs API key
         print("\nVerifying ElevenLabs API access...")
-        api_works = self.verify_elevenlabs_api()
-        if api_works:
+        elevenlabs_works = self.verify_elevenlabs_api()
+        if elevenlabs_works:
             print("✅ ElevenLabs API is working correctly")
         else:
             print("⚠️ ElevenLabs API verification failed - will use fallback TTS system")
+            
+        # Verify Lemonfox API key
+        print("\nVerifying Lemonfox Whisper API access...")
+        lemonfox_works = self.verify_lemonfox_api()
+        if lemonfox_works:
+            print("✅ Lemonfox Whisper API is working correctly")
+        else:
+            print("⚠️ Lemonfox API verification failed - will fall back to Google speech recognition if needed")
         
         # Test Arduino connection and set to idle pose
         print("\nTesting Arduino connection...")
@@ -3480,7 +3538,46 @@ class ConversationRobot:
         
         print(f"Failed to send message to Arduino after {max_retries} attempts")
         return False
+    
+    def verify_lemonfox_api(self):
+        """Verify that the Lemonfox API key is valid and has the right permissions"""
+        try:
+            print("Verifying Lemonfox API key...")
+            
+            # Get API key
+            lemonfox_api_key = self._parse_env_str("LEMONFOX_API_KEY", "")
+            
+            if not lemonfox_api_key:
+                print("Lemonfox API key is not set. Speech recognition may not work properly.")
+                return False
+                
+            # Make a simple request to test the API key
+            url = "https://api.lemonfox.ai/v1/models"
+            headers = {
+                "Authorization": f"Bearer {lemonfox_api_key}"
+            }
+            
+            response = requests.get(url, headers=headers)
+            
+            if response.status_code == 200:
+                print("✅ Lemonfox API key verified successfully")
+                models = response.json()
+                if models and isinstance(models, list) and len(models) > 0:
+                    print(f"Available models: {', '.join([m.get('id', 'unknown') for m in models])}")
+                return True
+            else:
+                print(f"⚠️ Lemonfox API verification failed: Status {response.status_code}")
+                print(f"Response: {response.text}")
+                print("Will fall back to Google speech recognition if needed")
+                return False
+                
+        except Exception as e:
+            print(f"Error verifying Lemonfox API: {e}")
+            print("Will fall back to Google speech recognition if needed")
+            return False
 
+
+# External functions outside the ConversationRobot class
 
 def check_env_file():
     """Check if .env file exists and contains required keys"""
@@ -3513,7 +3610,8 @@ def check_env_file():
         os.environ["MEMORY_EXCHANGES_LIMIT"] = "5"
         os.environ["VOICE_RATE"] = "150"
         os.environ["VOICE_VOLUME"] = "0.8"
-        os.environ["SPEECH_RECOGNITION"] = "google"
+        os.environ["SPEECH_RECOGNITION"] = "lemonfox"  # Using Lemonfox Whisper API
+        os.environ["LEMONFOX_API_KEY"] = "APFEQBqCJrLvMqrMUT3TIKpB3veCuSkp"  # Lemonfox API key
         os.environ["SILENCE_THRESHOLD"] = "0.8"
         os.environ["SPEECH_TIMEOUT"] = "1.5"
         os.environ["PHRASE_TIMEOUT"] = "5.0"
@@ -3550,10 +3648,13 @@ VOICE_VOLUME=0.8
 ARDUINO_PORT=""" + DEFAULT_ARDUINO_PORT + """
 ARDUINO_BAUD_RATE=9600
 
+# Speech Recognition settings
+SPEECH_RECOGNITION=lemonfox
+LEMONFOX_API_KEY=APFEQBqCJrLvMqrMUT3TIKpB3veCuSkp
+
 # Other settings
 SAVE_HISTORY=true
 ENABLE_BEEP=true
-SPEECH_RECOGNITION=google
 USE_EMOTION_DETECTION=true
 SHOW_WEBCAM=false
 PROCESS_EVERY_N_FRAMES=15
