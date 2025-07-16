@@ -445,7 +445,7 @@ class ConversationRobot:
                     with open('/sys/firmware/devicetree/base/model', 'r') as f:
                         model = f.read()
                         if 'Raspberry Pi' in model:
-                            print(f"Detected {model.strip('\0')} - applying specific camera settings")
+                            print(f"Detected {model.strip(chr(0))} - applying specific camera settings")
                             # Enable the V4L2 driver for Pi Camera Module
                             try:
                                 os.system("sudo modprobe bcm2835-v4l2")
@@ -2304,7 +2304,7 @@ class ConversationRobot:
                         model = f.read()
                         if 'Raspberry Pi' in model:
                             is_raspberry_pi = True
-                            print(f"Detected {model.strip('\0')}")
+                            print(f"Detected {model.strip(chr(0))}")
                 except:
                     pass
             
@@ -2364,7 +2364,7 @@ class ConversationRobot:
                         model = f.read()
                         if 'Raspberry Pi' in model:
                             is_raspberry_pi = True
-                            print(f"Configuring camera for {model.strip('\0')}")
+                            print(f"Configuring camera for {model.strip(chr(0))}")
                 except:
                     pass
             
@@ -2464,7 +2464,7 @@ class ConversationRobot:
         if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
             try:
                 with open('/sys/firmware/devicetree/base/model', 'r') as f:
-                    pi_model = f.read().strip('\0')
+                    pi_model = f.read().strip(chr(0))
                     if 'Raspberry Pi' in pi_model:
                         is_raspberry_pi = True
                         print(f"✅ Detected Raspberry Pi: {pi_model}")
