@@ -3295,17 +3295,97 @@ class ConversationRobot:
     def setup_arduino_connection(self):
         """Set up the Arduino connection with improved detection for Raspberry Pi"""
         try:
+            # First check if we're on a Raspberry Pi
+            is_raspberry_pi = False
+            if platform.system() == 'Linux':
+                try:
+                    with open('/proc/cpuinfo', 'r') as f:
+                        if 'Raspberry Pi' in f.read():
+                            is_raspberry_pi = True
+                            print("Detected Raspberry Pi - using specialized Arduino connection setup")
+                            
+                            # Check for permission issues on Raspberry Pi
+                            try:
+                                import subprocess
+                                # Check if user is in the dialout group
+                                groups_output = subprocess.check_output(['groups']).decode('utf-8')
+                                if 'dialout' not in groups_output:
+                                    print("\nWARNING: Your user might not have permission to access serial ports.")
+                                    print("You may need to add your user to the 'dialout' group:")
+                                    print("   sudo usermod -a -G dialout $USER")
+                                    print("   (logout and login again for changes to take effect)")
+                            except:
+                                pass
+                except:
+                    pass
+            
             # List available serial ports to help users
+            self.list_serial_ports()
+            
+            # Auto-detect Arduino port
             arduino_port = self.find_arduino_port()
             if arduino_port:
                 self.arduino_port = arduino_port
                 print(f"Auto-detected Arduino port: {arduino_port}")
             
+            # Check if port exists before trying to connect (for Linux/Raspberry Pi)
+            if platform.system() == 'Linux' and not os.path.exists(self.arduino_port):
+                print(f"Port {self.arduino_port} does not exist")
+                return self.try_alternative_ports()
+            
             print(f"Setting up Arduino connection on {self.arduino_port} at {self.arduino_baud_rate} baud...")
-            self.arduino_serial = serial.Serial(self.arduino_port, self.arduino_baud_rate, timeout=1)
-            time.sleep(2)  # Wait for Arduino to reset after connection
-            print("Arduino connection established successfully")
-            return True
+            
+            # Try to connect with more robust error handling
+            try:
+                self.arduino_serial = serial.Serial(
+                    port=self.arduino_port,
+                    baudrate=self.arduino_baud_rate,
+                    timeout=1,
+                    write_timeout=1
+                )
+                # On Raspberry Pi, ensure DTR is set correctly
+                if is_raspberry_pi:
+                    try:
+                        self.arduino_serial.dtr = True
+                        print("Set DTR signal for reliable Arduino reset")
+                    except:
+                        pass
+                
+                # Wait for Arduino to reset after connection
+                time.sleep(2)
+                
+                # Flush any pending data
+                self.arduino_serial.reset_input_buffer()
+                self.arduino_serial.reset_output_buffer()
+                
+                print("Arduino connection established successfully")
+                
+                # Send a test command to verify connection
+                print("Sending test command to verify connection...")
+                self.arduino_serial.write("idle\n".encode())
+                time.sleep(0.5)
+                
+                # Check for response
+                if self.arduino_serial.in_waiting:
+                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
+                    print(f"Arduino response: {response}")
+                
+                return True
+                
+            except serial.SerialException as se:
+                if is_raspberry_pi:
+                    print(f"Serial exception on Raspberry Pi: {se}")
+                    if "permission" in str(se).lower():
+                        print("\nPermission error detected. Try the following:")
+                        print("1. Run: sudo usermod -a -G dialout $USER")
+                        print("2. Log out and log back in")
+                        print("3. If that doesn't work, try: sudo chmod 666 " + self.arduino_port)
+                else:
+                    print(f"Serial exception: {se}")
+                    
+                # Try alternative ports
+                return self.try_alternative_ports()
+                
         except Exception as e:
             print(f"Failed to set up Arduino connection: {e}")
             print("Please check your Arduino connection and try again.")
@@ -3336,11 +3416,40 @@ class ConversationRobot:
             
             # On Raspberry Pi, look for specific patterns
             if platform.system() == 'Linux':
-                # Check for common Arduino ports on Raspberry Pi
+                # First check if we're on a Raspberry Pi
+                is_raspberry_pi = False
+                try:
+                    with open('/proc/cpuinfo', 'r') as f:
+                        if 'Raspberry Pi' in f.read():
+                            is_raspberry_pi = True
+                            print("Detected Raspberry Pi - using specialized Arduino detection")
+                except:
+                    pass
+                
+                # If we're on a Raspberry Pi, use the specialized scanning function
+                if is_raspberry_pi:
+                    # Use our specialized Raspberry Pi Arduino scanner
+                    pi_arduino_port = self.scan_raspberry_pi_arduino()
+                    if pi_arduino_port:
+                        print(f"Found Arduino on Raspberry Pi using specialized scan: {pi_arduino_port}")
+                        return pi_arduino_port
+                    
+                    print("Specialized scan didn't find Arduino, falling back to standard detection")
+                
+                # Check for common Arduino ports on Raspberry Pi with priority order
+                pi_arduino_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1']
+                
+                # Check each port in priority order
                 for port in ports:
-                    # Check for common Arduino port names on Linux/Raspberry Pi
-                    if any(port.device.startswith(prefix) for prefix in ['/dev/ttyACM', '/dev/ttyUSB', '/dev/ttyAMA']):
+                    # For Raspberry Pi, prioritize ACM devices (most common for Arduino)
+                    if any(port.device == p for p in pi_arduino_ports):
                         print(f"Found likely Arduino on Raspberry Pi: {port.device}")
+                        return port.device
+                
+                # If no ACM/USB devices found, check for any serial port
+                for port in ports:
+                    if any(port.device.startswith(prefix) for prefix in ['/dev/ttyS', '/dev/serial']):
+                        print(f"Found potential serial device on Raspberry Pi: {port.device}")
                         return port.device
             
             # On Windows, look for COM ports
@@ -3362,13 +3471,59 @@ class ConversationRobot:
             return None
     
     def try_alternative_ports(self):
-        """Try connecting to alternative common Arduino ports"""
+        """Try connecting to alternative common Arduino ports with enhanced Raspberry Pi support"""
         common_ports = []
+        
+        # Check if we're on a Raspberry Pi
+        is_raspberry_pi = False
+        if platform.system() == 'Linux':
+            try:
+                with open('/proc/cpuinfo', 'r') as f:
+                    if 'Raspberry Pi' in f.read():
+                        is_raspberry_pi = True
+                        print("Detected Raspberry Pi - using specialized port detection")
+            except:
+                pass
         
         # Add common ports based on platform
         if platform.system() == 'Linux':
-            # Common Raspberry Pi Arduino ports
-            common_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyAMA0']
+            if is_raspberry_pi:
+                # Prioritized list of common Raspberry Pi Arduino ports
+                common_ports = [
+                    '/dev/ttyACM0',  # Most common for Arduino Uno/Mega on Pi
+                    '/dev/ttyACM1',
+                    '/dev/ttyUSB0',  # Common for Arduino with CH340/CP2102 chip
+                    '/dev/ttyUSB1',
+                    '/dev/ttyAMA0',  # Hardware serial on Pi
+                    '/dev/serial0',  # Symlink to serial port on newer Pi
+                    '/dev/ttyS0'     # Software serial port
+                ]
+                
+                # Try to detect newly connected USB devices
+                try:
+                    import subprocess
+                    # Run dmesg to see recent USB connections
+                    dmesg_output = subprocess.check_output(['dmesg', '|', 'grep', 'tty', '|', 'tail', '-n', '5'], 
+                                                          shell=True).decode('utf-8', errors='ignore')
+                    print("Recent USB/TTY connections:")
+                    print(dmesg_output)
+                    
+                    # Look for Arduino-related entries
+                    for line in dmesg_output.split('\n'):
+                        if 'tty' in line:
+                            parts = line.split()
+                            for part in parts:
+                                if 'tty' in part:
+                                    potential_port = '/dev/' + part.strip(':')
+                                    if potential_port not in common_ports:
+                                        print(f"Found potential new Arduino port from dmesg: {potential_port}")
+                                        # Add to beginning of list to try first
+                                        common_ports.insert(0, potential_port)
+                except Exception as e:
+                    print(f"Could not check dmesg for recent connections: {e}")
+            else:
+                # Standard Linux ports
+                common_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyAMA0']
         elif platform.system() == 'Windows':
             # Common Windows Arduino ports
             common_ports = ['COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8']
@@ -3379,17 +3534,40 @@ class ConversationRobot:
         if self.arduino_port in common_ports:
             common_ports.remove(self.arduino_port)
         
-        # Try each port
+        # Try each port with improved error handling
         for port in common_ports:
             try:
                 print(f"Trying alternative port: {port}")
+                
+                # Check if port exists first (for Linux/Raspberry Pi)
+                if platform.system() == 'Linux' and not os.path.exists(port):
+                    print(f"Port {port} does not exist, skipping")
+                    continue
+                
+                # Try to connect with timeout
                 self.arduino_serial = serial.Serial(port, self.arduino_baud_rate, timeout=1)
                 time.sleep(2)  # Wait for Arduino to reset
+                
+                # Test if we can write to the port
+                self.arduino_serial.write("idle\n".encode())
+                time.sleep(0.5)
+                
+                # If we got here without errors, update the port and return success
                 self.arduino_port = port
                 print(f"Successfully connected to Arduino on {port}")
                 return True
             except Exception as e:
                 print(f"Could not connect to {port}: {e}")
+        
+        if is_raspberry_pi:
+            print("\nTroubleshooting tips for Raspberry Pi:")
+            print("1. Make sure the Arduino is connected via USB")
+            print("2. Try running 'lsusb' to see if Arduino is detected")
+            print("3. Check permissions with 'ls -la /dev/tty*'")
+            print("4. You may need to add your user to the 'dialout' group:")
+            print("   sudo usermod -a -G dialout $USER")
+            print("   (logout and login again for changes to take effect)")
+            print("5. Try unplugging and reconnecting the Arduino")
         
         print("Could not find Arduino on any common ports")
         return False
@@ -3431,31 +3609,89 @@ class ConversationRobot:
             print(f"Error listing serial ports: {e}")
     
     def test_arduino_connection(self):
-        """Test the Arduino connection by sending the idle command"""
+        """Test the Arduino connection by sending the idle command with enhanced Raspberry Pi support"""
         if not self.arduino_serial:
             print("Arduino connection not established, attempting to reconnect...")
             if not self.setup_arduino_connection():
                 print("Could not establish Arduino connection for testing")
+                
+                # Check if we're on a Raspberry Pi and provide specific guidance
+                if platform.system() == 'Linux':
+                    try:
+                        with open('/proc/cpuinfo', 'r') as f:
+                            if 'Raspberry Pi' in f.read():
+                                print("\nRaspberry Pi Arduino Connection Troubleshooting:")
+                                print("1. Make sure Arduino is properly connected via USB")
+                                print("2. Check USB connections with 'lsusb' command")
+                                print("3. Check available serial ports with 'ls -l /dev/tty*'")
+                                print("4. Ensure your user has permission to access serial ports:")
+                                print("   sudo usermod -a -G dialout $USER")
+                                print("   (logout and login again for changes to take effect)")
+                                print("5. Try manually setting permissions: sudo chmod 666 /dev/ttyACM0")
+                                print("6. Try unplugging and reconnecting the Arduino")
+                                print("7. If using a USB hub, try connecting Arduino directly to the Raspberry Pi")
+                    except:
+                        pass
+                
                 return False
         
         try:
+            # Clear any pending data first
+            self.arduino_serial.reset_input_buffer()
+            self.arduino_serial.reset_output_buffer()
+            
             print("Testing Arduino connection by sending 'idle' command...")
             self.arduino_serial.write("idle\n".encode())
-            time.sleep(0.5)
+            self.arduino_serial.flush()  # Ensure data is sent immediately
+            time.sleep(1.0)  # Give Arduino more time to respond
             
             # Try to read response if Arduino sends any
+            response_received = False
             if self.arduino_serial.in_waiting:
                 response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
                 print(f"Arduino response: {response}")
+                response_received = True
+            
+            # Try a second command to ensure reliable communication
+            print("Sending 'talk' command to verify bidirectional communication...")
+            self.arduino_serial.write("talk\n".encode())
+            self.arduino_serial.flush()
+            time.sleep(1.0)
+            
+            # Check for response again
+            if self.arduino_serial.in_waiting:
+                response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
+                print(f"Arduino response to second command: {response}")
+                response_received = True
+            
+            # Return to idle state
+            self.arduino_serial.write("idle\n".encode())
+            self.arduino_serial.flush()
             
             # Verify the Arduino is actually responding to commands
             if self.verify_arduino_response():
                 print("Arduino test completed successfully - verified Arduino is responding to commands")
                 return True
             else:
-                print("Arduino connection established but not responding to commands")
-                return False
+                # If we received any response, consider it a partial success
+                if response_received:
+                    print("Arduino is responding but verification test incomplete - will attempt to continue")
+                    return True
+                else:
+                    print("Arduino connection established but not responding to commands")
+                    return False
                 
+        except serial.SerialException as se:
+            print(f"Serial exception during Arduino test: {se}")
+            
+            # Check if this is a permission issue on Raspberry Pi
+            if "permission" in str(se).lower() and platform.system() == 'Linux':
+                print("\nPermission error detected. Try the following:")
+                print("1. Run: sudo usermod -a -G dialout $USER")
+                print("2. Log out and log back in")
+                print("3. If that doesn't work, try: sudo chmod 666 " + self.arduino_port)
+            
+            return False
         except Exception as e:
             print(f"Arduino test failed: {e}")
             return False
@@ -3575,6 +3811,89 @@ class ConversationRobot:
             print(f"Error verifying Lemonfox API: {e}")
             print("Will fall back to Google speech recognition if needed")
             return False
+    
+    def scan_raspberry_pi_arduino(self):
+        """Specifically scan for Arduino devices connected to a Raspberry Pi"""
+        try:
+            print("Performing specialized Arduino scan for Raspberry Pi...")
+            found_ports = []
+            
+            # Check USB devices first
+            try:
+                import subprocess
+                # Check USB devices
+                usb_output = subprocess.check_output(['lsusb']).decode('utf-8')
+                print("USB devices found:")
+                print(usb_output)
+                
+                # Look for Arduino-related USB devices
+                arduino_found = False
+                for line in usb_output.split('\n'):
+                    if any(keyword in line.lower() for keyword in ['arduino', 'uno', 'mega', 'leonardo', 'micro']):
+                        print(f"Found Arduino USB device: {line}")
+                        arduino_found = True
+                
+                if arduino_found:
+                    print("Arduino device detected in USB list")
+                    
+                    # Try to find which port it's connected to using dmesg
+                    try:
+                        # Look at recent kernel messages for Arduino connection
+                        dmesg_output = subprocess.check_output(['dmesg', '|', 'grep', '-i', 'arduino\\|tty\\|acm\\|usb', '|', 'tail', '-n', '20'], 
+                                                              shell=True).decode('utf-8', errors='ignore')
+                        
+                        # Look for tty assignments in dmesg output
+                        for line in dmesg_output.split('\n'):
+                            if 'tty' in line.lower():
+                                parts = line.split()
+                                for part in parts:
+                                    if 'tty' in part.lower():
+                                        # Extract the tty device name
+                                        tty_name = part.strip(':,')
+                                        if '/' not in tty_name:
+                                            tty_name = '/dev/' + tty_name
+                                        
+                                        if os.path.exists(tty_name) and tty_name not in found_ports:
+                                            print(f"Found potential Arduino port from dmesg: {tty_name}")
+                                            found_ports.append(tty_name)
+                    except Exception as e:
+                        print(f"Error searching dmesg: {e}")
+            except Exception as e:
+                print(f"Error checking USB devices: {e}")
+            
+            # Check for common Arduino port patterns
+            common_patterns = ['/dev/ttyACM*', '/dev/ttyUSB*']
+            for pattern in common_patterns:
+                matching_ports = glob.glob(pattern)
+                for port in matching_ports:
+                    if port not in found_ports:
+                        found_ports.append(port)
+                        print(f"Found potential Arduino port: {port}")
+            
+            # Check permissions on found ports
+            for port in found_ports:
+                try:
+                    import stat
+                    port_stat = os.stat(port)
+                    readable = port_stat.st_mode & stat.S_IRUSR
+                    writable = port_stat.st_mode & stat.S_IWUSR
+                    
+                    if not (readable and writable):
+                        print(f"Warning: {port} may have permission issues")
+                        print(f"Current permissions: {oct(port_stat.st_mode & 0o777)}")
+                        print("You may need to: sudo chmod 666 " + port)
+                except Exception as e:
+                    print(f"Error checking permissions for {port}: {e}")
+            
+            # If we found any ports, return the first one
+            if found_ports:
+                print(f"Using first detected port: {found_ports[0]}")
+                return found_ports[0]
+            
+            return None
+        except Exception as e:
+            print(f"Error in Raspberry Pi Arduino scan: {e}")
+            return None
 
 
 # External functions outside the ConversationRobot class
