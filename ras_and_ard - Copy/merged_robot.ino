@@ -117,10 +117,33 @@ void loop() {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
 
-    if      (cmd == "idle")        idlePose();
-    else if (cmd == "talk")        talkPose();
-    else if (cmd == "happy")       happyDance();
-    else if (cmd == "shake_hand")  shakeHand();
+    if (cmd == "idle") {
+      idlePose();
+      Serial.println("OK: idle");
+    }
+    else if (cmd.startsWith("talk")) {
+      // Check if there's a duration parameter (talk:5000)
+      if (cmd.indexOf(':') > 0) {
+        String durationStr = cmd.substring(cmd.indexOf(':') + 1);
+        int duration = durationStr.toInt();
+        talkPoseWithDuration(duration);
+        Serial.println("OK: talk with duration " + durationStr + "ms");
+      } else {
+        talkPose();
+        Serial.println("OK: talk");
+      }
+    }
+    else if (cmd == "happy") {
+      happyDance();
+      Serial.println("OK: happy");
+    }
+    else if (cmd == "shake_hand") {
+      shakeHand();
+      Serial.println("OK: shake_hand");
+    }
+    else {
+      Serial.println("Unknown command: " + cmd);
+    }
   }
   
   // Handle eye blinking
@@ -142,6 +165,19 @@ void talkPose() {
   pwm.setPWM(RIGHT_HAND_CH, 0, angleToPulse(50));
   delay(300);
   pwm.setPWM(RIGHT_HAND_CH, 0, angleToPulse(0));
+}
+
+void talkPoseWithDuration(int duration) {
+  // Calculate number of talk cycles based on duration
+  // Each cycle is about 600ms (300ms up, 300ms down)
+  int cycles = max(1, duration / 600);
+  
+  for (int i = 0; i < cycles; i++) {
+    pwm.setPWM(RIGHT_HAND_CH, 0, angleToPulse(50));
+    delay(300);
+    pwm.setPWM(RIGHT_HAND_CH, 0, angleToPulse(0));
+    delay(300);
+  }
 }
 
 void happyDance() {

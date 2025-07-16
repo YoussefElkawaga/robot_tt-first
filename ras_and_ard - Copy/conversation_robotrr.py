@@ -195,7 +195,7 @@ class ConversationRobot:
         if not self.elevenlabs_api_key and "ELEVENLABS_API_KEY" in os.environ:
             self.elevenlabs_api_key = os.environ["ELEVENLABS_API_KEY"]
         if not self.elevenlabs_api_key:
-            self.elevenlabs_api_key = "sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61"
+            self.elevenlabs_api_key = "sk_66dccabc23a81c5c5fc8ca593063faab9040dfea9cdb59a0"
             print("Using hardcoded ElevenLabs API key")
             
         self.elevenlabs_voice_id = self._parse_env_str("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
@@ -2628,10 +2628,52 @@ class ConversationRobot:
             response = requests.get(url, headers=headers)
             
             if response.status_code == 200:
-                print("ElevenLabs API key verified successfully")
-                # Reset the failed flag since the key is working
-                self.elevenlabs_failed = False
-                return True
+                print("ElevenLabs API key verified successfully for models endpoint")
+                
+                # Now test the text-to-speech endpoint with a minimal request
+                print("Testing text-to-speech permissions...")
+                tts_url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.elevenlabs_voice_id}"
+                tts_headers = {
+                    "xi-api-key": self.elevenlabs_api_key,
+                    "Content-Type": "application/json"
+                }
+                tts_data = {
+                    "text": "Test",
+                    "model_id": self.elevenlabs_model_id
+                }
+                
+                try:
+                    tts_response = requests.post(tts_url, headers=tts_headers, json=tts_data)
+                    
+                    if tts_response.status_code == 200:
+                        print("✅ ElevenLabs text-to-speech permissions verified successfully")
+                        # Reset the failed flag since the key is fully working
+                        self.elevenlabs_failed = False
+                        return True
+                    else:
+                        print(f"⚠️ ElevenLabs text-to-speech test failed: Status {tts_response.status_code}")
+                        print(f"Response: {tts_response.text}")
+                        
+                        # Check for unusual activity detection
+                        if tts_response.status_code == 401:
+                            try:
+                                error_data = tts_response.json()
+                                if "detail" in error_data and "status" in error_data["detail"]:
+                                    if error_data["detail"]["status"] == "detected_unusual_activity":
+                                        print("⚠️ Unusual activity detected on your ElevenLabs account")
+                                        print("Will use fallback TTS system instead")
+                                        self.elevenlabs_failed = True
+                            except:
+                                pass
+                        
+                        # The key works for models but not for TTS
+                        print("ElevenLabs API key has limited permissions - will use fallback TTS")
+                        self.elevenlabs_failed = True
+                        return False
+                except Exception as tts_e:
+                    print(f"Error testing text-to-speech: {tts_e}")
+                    self.elevenlabs_failed = True
+                    return False
             else:
                 print(f"ElevenLabs API verification failed: Status {response.status_code}")
                 print(f"Response: {response.text}")
@@ -2808,10 +2850,12 @@ class ConversationRobot:
                 "status_code: 401" in error_str or 
                 "missing_permissions" in error_str or 
                 "Unauthorized" in error_str or
-                "text_to_speech" in error_str):
+                "text_to_speech" in error_str or
+                "detected_unusual_activity" in error_str or
+                "unusual activity" in error_str.lower()):
                 
-                print("\nNOTE: Your ElevenLabs API key doesn't have the required text_to_speech permission.")
-                print("This is common for free accounts or if your subscription has expired.")
+                print("\nNOTE: Your ElevenLabs API key has an issue with text-to-speech permissions.")
+                print("This could be due to unusual activity detection, free tier limitations, or expired subscription.")
                 print("Switching to fallback TTS system for the rest of this session.")
                 
                 # Mark ElevenLabs as failed to avoid repeated attempts
@@ -2829,6 +2873,7 @@ class ConversationRobot:
             if not self.has_fallback_tts or self.tts_engine is None:
                 # Try to initialize pyttsx3 again
                 try:
+                    print("Initializing fallback TTS engine...")
                     self.tts_engine = pyttsx3.init()
                     self.tts_engine.setProperty('rate', self._parse_env_int("VOICE_RATE", 150))
                     self.tts_engine.setProperty('volume', self._parse_env_float("VOICE_VOLUME", 0.8))
@@ -2844,25 +2889,97 @@ class ConversationRobot:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
                 temp_file_path = temp_file.name
             
+            print(f"Audio saved to {temp_file_path}")
+            
             # Save speech to a temporary WAV file
-            self.tts_engine.save_to_file(text, temp_file_path)
-            self.tts_engine.runAndWait()
+            try:
+                self.tts_engine.save_to_file(text, temp_file_path)
+                self.tts_engine.runAndWait()
+            except Exception as e:
+                print(f"Error saving speech to file: {e}")
+                # Try direct speech as fallback
+                try:
+                    print("Trying direct speech instead...")
+                    self.tts_engine.say(text)
+                    self.tts_engine.runAndWait()
+                    # Since we used direct speech, we don't have audio data to return
+                    # But we'll create a dummy file so the rest of the code works
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(b'RIFF' + b'\x00' * 100)  # Dummy WAV header
+                except Exception as e2:
+                    print(f"Direct speech also failed: {e2}")
+                    return None
             
             # Read the file back as bytes
-            with open(temp_file_path, 'rb') as f:
-                audio_data = f.read()
+            try:
+                with open(temp_file_path, 'rb') as f:
+                    audio_data = f.read()
+                print(f"Read {len(audio_data)} bytes of audio data")
+            except Exception as e:
+                print(f"Error reading audio file: {e}")
+                return None
             
             # Clean up temporary file
             try:
                 os.unlink(temp_file_path)
-            except:
-                pass
+            except Exception as e:
+                print(f"Error removing temp file: {e}")
+            
+            # For Raspberry Pi, try to play the audio directly
+            if platform.system() == 'Linux':
+                try:
+                    # Check if this is a Raspberry Pi
+                    is_raspberry_pi = False
+                    try:
+                        with open('/proc/cpuinfo', 'r') as f:
+                            if 'Raspberry Pi' in f.read():
+                                is_raspberry_pi = True
+                    except:
+                        pass
+                    
+                    if is_raspberry_pi:
+                        print("On Raspberry Pi - trying to play audio directly...")
+                        # Save to a new temporary file
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as direct_file:
+                            direct_path = direct_file.name
+                            direct_file.write(audio_data)
+                        
+                        # Try multiple players
+                        players = [
+                            f'aplay "{direct_path}"',
+                            f'mpg123 "{direct_path}"',
+                            f'mplayer "{direct_path}"',
+                            f'ffplay -nodisp -autoexit "{direct_path}"'
+                        ]
+                        
+                        for player in players:
+                            print(f"Trying to play with: {player}")
+                            exit_code = os.system(player)
+                            if exit_code == 0:
+                                print(f"Successfully played audio with {player}")
+                                break
+                        
+                        # Clean up
+                        try:
+                            os.unlink(direct_path)
+                        except:
+                            pass
+                except Exception as e:
+                    print(f"Error playing audio directly: {e}")
             
             print("Successfully generated speech using fallback TTS")
             return audio_data
             
         except Exception as e:
             print(f"Error in fallback TTS: {e}")
+            # Last resort - try direct speech
+            try:
+                if self.tts_engine:
+                    print("Attempting direct speech as last resort...")
+                    self.tts_engine.say(text)
+                    self.tts_engine.runAndWait()
+            except:
+                pass
             return None
     
     def play_audio(self, audio_data):
@@ -2877,21 +2994,60 @@ class ConversationRobot:
                 temp_file.write(audio_data)
                 temp_file_path = temp_file.name
             
+            print(f"Audio saved to {temp_file_path}")
+            
             # Play the audio file using the system's default player
             if platform.system() == 'Windows':
-                os.system(f'start {temp_file_path}')
+                try:
+                    # First try with start command
+                    os.system(f'start {temp_file_path}')
+                except Exception as e1:
+                    print(f"Error with start command: {e1}")
+                    # Try alternative Windows playback
+                    try:
+                        import winsound
+                        winsound.PlaySound(temp_file_path, winsound.SND_FILENAME)
+                    except Exception as e2:
+                        print(f"Error with winsound: {e2}")
             elif platform.system() == 'Darwin':  # macOS
                 os.system(f'afplay {temp_file_path}')
             else:  # Linux and others
-                os.system(f'mpg123 {temp_file_path}')
+                # Try multiple players in order of preference
+                players = [
+                    f'mpg123 "{temp_file_path}"',
+                    f'mplayer "{temp_file_path}"',
+                    f'aplay "{temp_file_path}"',
+                    f'ffplay -nodisp -autoexit "{temp_file_path}"',
+                    f'python3 -m playsound "{temp_file_path}"'
+                ]
+                
+                success = False
+                for player_cmd in players:
+                    print(f"Trying to play audio with: {player_cmd}")
+                    exit_code = os.system(player_cmd)
+                    if exit_code == 0:
+                        print(f"Successfully played audio with: {player_cmd}")
+                        success = True
+                        break
+                    else:
+                        print(f"Failed to play with {player_cmd.split()[0]}, trying next player...")
+                
+                if not success:
+                    print("All audio players failed. Check your audio setup.")
+                    # Try to use the fallback TTS engine directly
+                    if self.tts_engine:
+                        print("Using direct TTS engine as last resort")
+                        # Extract text from the temp file name for debugging
+                        self.tts_engine.say("Audio playback failed, but TTS is working")
+                        self.tts_engine.runAndWait()
             
             # Clean up the temporary file after a delay
             def cleanup_temp_file():
                 time.sleep(5)  # Wait for the audio to finish playing
                 try:
                     os.unlink(temp_file_path)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Error removing temp file: {e}")
             
             cleanup_thread = threading.Thread(target=cleanup_temp_file)
             cleanup_thread.daemon = True
@@ -2903,6 +3059,14 @@ class ConversationRobot:
             return True
         except Exception as e:
             print(f"Error playing audio: {e}")
+            # As a last resort, try direct TTS
+            try:
+                if self.tts_engine:
+                    print("Using direct TTS engine after playback error")
+                    self.tts_engine.say("Audio playback failed, but TTS is working")
+                    self.tts_engine.runAndWait()
+            except:
+                pass
             return False
     
     def ensure_fer_dependencies(self):
@@ -3413,7 +3577,7 @@ class ConversationRobot:
                     with open('/proc/cpuinfo', 'r') as f:
                         if 'Raspberry Pi' in f.read():
                             is_raspberry_pi = True
-                            print("✅ Detected Raspberry Pi - using specialized Arduino connection setup")
+                            print("Detected Raspberry Pi - using specialized Arduino connection setup")
                             
                             # Check for permission issues on Raspberry Pi
                             try:
@@ -3421,190 +3585,133 @@ class ConversationRobot:
                                 # Check if user is in the dialout group
                                 groups_output = subprocess.check_output(['groups']).decode('utf-8')
                                 if 'dialout' not in groups_output:
-                                    print("\n⚠️ WARNING: Your user might not have permission to access serial ports.")
-                                    print("Attempting to automatically fix permissions...")
-                                    
-                                    # Try to automatically fix permissions for /dev/ttyACM0
-                                    try:
-                                        subprocess.run(['sudo', 'chmod', '666', '/dev/ttyACM0'], check=False)
-                                        print("✅ Applied permissions fix for /dev/ttyACM0")
-                                    except:
-                                        print("❌ Failed to automatically fix permissions")
-                                        print("You may need to manually run: sudo chmod 666 /dev/ttyACM0")
+                                    print("\nWARNING: Your user might not have permission to access serial ports.")
+                                    print("You may need to add your user to the 'dialout' group:")
+                                    print("   sudo usermod -a -G dialout $USER")
+                                    print("   (logout and login again for changes to take effect)")
                             except:
                                 pass
                 except:
                     pass
             
-            # Force Arduino port for Raspberry Pi to ensure reliable connection
-            if is_raspberry_pi:
-                # Always try /dev/ttyACM0 first on Raspberry Pi as it's the most common
-                if os.path.exists('/dev/ttyACM0'):
-                    self.arduino_port = '/dev/ttyACM0'
-                    print(f"✅ Using standard Arduino port on Raspberry Pi: {self.arduino_port}")
+            # Make sure pyserial is properly imported
+            try:
+                import serial
+                print("Serial library imported successfully")
+            except ImportError:
+                print("Error importing serial library. Trying to install pyserial...")
+                try:
+                    import subprocess
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyserial"])
+                    import serial
+                    print("Successfully installed and imported pyserial")
+                except Exception as e:
+                    print(f"Failed to install pyserial: {e}")
+                    print("Arduino connection will not be available")
+                    return False
             
             # List available serial ports to help users
             self.list_serial_ports()
             
-            # Auto-detect Arduino port if not already set for Raspberry Pi
-            if not (is_raspberry_pi and self.arduino_port == '/dev/ttyACM0'):
+            # For Raspberry Pi, try to find Arduino using the by-id path which is more stable
+            if is_raspberry_pi:
+                print("Looking for Arduino using stable by-id path...")
+                try:
+                    by_id_path = "/dev/serial/by-id"
+                    if os.path.exists(by_id_path):
+                        arduino_paths = [os.path.join(by_id_path, f) for f in os.listdir(by_id_path) 
+                                        if "arduino" in f.lower()]
+                        if arduino_paths:
+                            self.arduino_port = arduino_paths[0]
+                            print(f"Found Arduino at stable path: {self.arduino_port}")
+                except Exception as e:
+                    print(f"Error looking for Arduino in by-id: {e}")
+            
+            # Auto-detect Arduino port if we haven't found it yet
+            if not is_raspberry_pi or not self.arduino_port.startswith("/dev/serial/by-id"):
                 arduino_port = self.find_arduino_port()
                 if arduino_port:
                     self.arduino_port = arduino_port
-                    print(f"✅ Auto-detected Arduino port: {arduino_port}")
+                    print(f"Auto-detected Arduino port: {arduino_port}")
             
-            # Check if port exists before trying to connect
-            if not os.path.exists(self.arduino_port):
-                print(f"❌ Port {self.arduino_port} does not exist")
-                
-                # For Raspberry Pi, try to fix by checking USB connections
-                if is_raspberry_pi:
-                    print("Checking USB connections on Raspberry Pi...")
-                    try:
-                        import subprocess
-                        # Run lsusb to show connected devices
-                        usb_output = subprocess.check_output(['lsusb']).decode('utf-8')
-                        print("USB devices found:")
-                        print(usb_output)
-                        
-                        # Check if Arduino is in the list
-                        if 'Arduino' in usb_output:
-                            print("✅ Arduino is physically connected via USB")
-                            print("Attempting to create device node...")
-                            
-                            # Try to force create the device node
-                            try:
-                                subprocess.run(['sudo', 'modprobe', 'usbserial'], check=False)
-                                time.sleep(1)
-                                # Check if it worked
-                                if os.path.exists('/dev/ttyACM0'):
-                                    self.arduino_port = '/dev/ttyACM0'
-                                    print("✅ Successfully created device node")
-                                else:
-                                    print("❌ Failed to create device node")
-                            except:
-                                pass
-                    except:
-                        pass
-                
-                # If still not found, try alternative ports
-                if not os.path.exists(self.arduino_port):
-                    return self.try_alternative_ports()
+            # Check if port exists before trying to connect (for Linux/Raspberry Pi)
+            if platform.system() == 'Linux' and not os.path.exists(self.arduino_port):
+                print(f"Port {self.arduino_port} does not exist")
+                return self.try_alternative_ports()
             
             print(f"Setting up Arduino connection on {self.arduino_port} at {self.arduino_baud_rate} baud...")
             
             # Try to connect with more robust error handling
             try:
-                # First ensure the port has proper permissions on Raspberry Pi
-                if is_raspberry_pi:
-                    try:
-                        import subprocess
-                        subprocess.run(['sudo', 'chmod', '666', self.arduino_port], check=False)
-                        print(f"Applied permissions fix for {self.arduino_port}")
-                    except:
-                        pass
+                # Make sure we're using the correct serial module
+                import serial
                 
-                # Open the serial connection with explicit settings
                 self.arduino_serial = serial.Serial(
                     port=self.arduino_port,
                     baudrate=self.arduino_baud_rate,
                     timeout=1,
-                    write_timeout=1,
-                    bytesize=serial.EIGHTBITS,
-                    parity=serial.PARITY_NONE,
-                    stopbits=serial.STOPBITS_ONE,
-                    xonxoff=False,
-                    rtscts=False,
-                    dsrdtr=False
+                    write_timeout=1
                 )
-                
                 # On Raspberry Pi, ensure DTR is set correctly
                 if is_raspberry_pi:
                     try:
                         self.arduino_serial.dtr = True
-                        self.arduino_serial.rts = True
-                        print("✅ Set DTR/RTS signals for reliable Arduino reset")
+                        print("Set DTR signal for reliable Arduino reset")
                     except:
                         pass
                 
-                # Wait for Arduino to reset after connection (longer for reliability)
-                print("Waiting for Arduino to initialize...")
-                time.sleep(3)
+                # Wait for Arduino to reset after connection
+                time.sleep(2)
                 
                 # Flush any pending data
                 self.arduino_serial.reset_input_buffer()
                 self.arduino_serial.reset_output_buffer()
                 
-                print("✅ Arduino connection established successfully")
+                print("Arduino connection established successfully")
                 
                 # Send a test command to verify connection
                 print("Sending test command to verify connection...")
-                test_cmd = "idle\n"
-                self.arduino_serial.write(test_cmd.encode('utf-8'))
-                self.arduino_serial.flush()  # Ensure data is sent immediately
-                time.sleep(1.0)  # Give Arduino more time to respond
+                self.arduino_serial.write("idle\n".encode())
+                time.sleep(0.5)
                 
                 # Check for response
-                response_received = False
                 if self.arduino_serial.in_waiting:
                     response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
                     print(f"Arduino response: {response}")
-                    response_received = True
                 
-                # Even if no response, try a second command for confirmation
-                print("Sending second test command...")
-                self.arduino_serial.write("talk\n".encode('utf-8'))
-                self.arduino_serial.flush()
-                time.sleep(1.0)
-                
-                # Check for response again
-                if self.arduino_serial.in_waiting:
-                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
-                    print(f"Arduino response to second command: {response}")
-                    response_received = True
-                
-                # Return to idle state
-                self.arduino_serial.write("idle\n".encode('utf-8'))
-                self.arduino_serial.flush()
-                
-                # Consider the connection successful even without response
-                # Many Arduino sketches don't send responses back
-                print("✅ Arduino connection test completed")
                 return True
                 
             except serial.SerialException as se:
                 if is_raspberry_pi:
-                    print(f"❌ Serial exception on Raspberry Pi: {se}")
+                    print(f"Serial exception on Raspberry Pi: {se}")
                     if "permission" in str(se).lower():
-                        print("\nPermission error detected. Attempting automatic fix...")
+                        print("\nPermission error detected. Try the following:")
+                        print("1. Run: sudo usermod -a -G dialout $USER")
+                        print("2. Log out and log back in")
+                        print("3. If that doesn't work, try: sudo chmod 666 " + self.arduino_port)
+                        # Try to fix permissions automatically
                         try:
-                            import subprocess
-                            subprocess.run(['sudo', 'chmod', '666', self.arduino_port], check=False)
-                            print(f"✅ Applied permissions fix for {self.arduino_port}")
-                            
-                            # Try connecting again immediately
-                            try:
-                                self.arduino_serial = serial.Serial(
-                                    port=self.arduino_port,
-                                    baudrate=self.arduino_baud_rate,
-                                    timeout=1
-                                )
-                                print("✅ Successfully connected after permission fix!")
-                                time.sleep(2)  # Wait for Arduino reset
-                                return True
-                            except:
-                                print("❌ Still failed after permission fix")
+                            os.system(f"sudo chmod 666 {self.arduino_port}")
+                            print(f"Attempted to fix permissions on {self.arduino_port}")
+                            # Try connecting again
+                            self.arduino_serial = serial.Serial(
+                                port=self.arduino_port,
+                                baudrate=self.arduino_baud_rate,
+                                timeout=1,
+                                write_timeout=1
+                            )
+                            print("Connection successful after fixing permissions!")
+                            return True
                         except:
-                            print("❌ Failed to fix permissions")
-                            print("Please run manually: sudo chmod 666 " + self.arduino_port)
+                            pass
                 else:
-                    print(f"❌ Serial exception: {se}")
+                    print(f"Serial exception: {se}")
                     
                 # Try alternative ports
                 return self.try_alternative_ports()
                 
         except Exception as e:
-            print(f"❌ Failed to set up Arduino connection: {e}")
+            print(f"Failed to set up Arduino connection: {e}")
             print("Please check your Arduino connection and try again.")
             
             # If connection failed, try common alternative ports
@@ -3691,6 +3798,22 @@ class ConversationRobot:
         """Try connecting to alternative common Arduino ports with enhanced Raspberry Pi support"""
         common_ports = []
         
+        # Make sure serial is properly imported
+        try:
+            import serial
+            print("Serial library imported successfully for alternative ports")
+        except ImportError:
+            print("Error importing serial library. Trying to install pyserial...")
+            try:
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "pyserial"])
+                import serial
+                print("Successfully installed and imported pyserial")
+            except Exception as e:
+                print(f"Failed to install pyserial: {e}")
+                print("Arduino connection will not be available")
+                return False
+        
         # Check if we're on a Raspberry Pi
         is_raspberry_pi = False
         if platform.system() == 'Linux':
@@ -3702,11 +3825,29 @@ class ConversationRobot:
             except:
                 pass
         
+        # First check for Arduino devices in /dev/serial/by-id which are more reliable
+        if is_raspberry_pi:
+            try:
+                by_id_path = "/dev/serial/by-id"
+                if os.path.exists(by_id_path):
+                    print("Checking /dev/serial/by-id for Arduino devices...")
+                    arduino_paths = []
+                    for f in os.listdir(by_id_path):
+                        if any(keyword in f.lower() for keyword in ["arduino", "uno", "mega", "leonardo"]):
+                            full_path = os.path.join(by_id_path, f)
+                            arduino_paths.append(full_path)
+                            print(f"Found Arduino device at: {full_path}")
+                    
+                    # Add these to the beginning of our ports to try
+                    common_ports.extend(arduino_paths)
+            except Exception as e:
+                print(f"Error checking /dev/serial/by-id: {e}")
+        
         # Add common ports based on platform
         if platform.system() == 'Linux':
             if is_raspberry_pi:
                 # Prioritized list of common Raspberry Pi Arduino ports
-                common_ports = [
+                pi_ports = [
                     '/dev/ttyACM0',  # Most common for Arduino Uno/Mega on Pi
                     '/dev/ttyACM1',
                     '/dev/ttyUSB0',  # Common for Arduino with CH340/CP2102 chip
@@ -3715,6 +3856,9 @@ class ConversationRobot:
                     '/dev/serial0',  # Symlink to serial port on newer Pi
                     '/dev/ttyS0'     # Software serial port
                 ]
+                
+                # Add these to our list of ports to try
+                common_ports.extend(pi_ports)
                 
                 # Try to detect newly connected USB devices
                 try:
@@ -3740,12 +3884,15 @@ class ConversationRobot:
                     print(f"Could not check dmesg for recent connections: {e}")
             else:
                 # Standard Linux ports
-                common_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyAMA0']
+                linux_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyAMA0']
+                common_ports.extend(linux_ports)
         elif platform.system() == 'Windows':
             # Common Windows Arduino ports
-            common_ports = ['COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8']
+            win_ports = ['COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8']
+            common_ports.extend(win_ports)
         else:  # macOS
-            common_ports = ['/dev/cu.usbmodem1401', '/dev/cu.usbserial', '/dev/tty.usbmodem']
+            mac_ports = ['/dev/cu.usbmodem1401', '/dev/cu.usbserial', '/dev/tty.usbmodem']
+            common_ports.extend(mac_ports)
         
         # Remove the port we already tried
         if self.arduino_port in common_ports:
@@ -3762,6 +3909,7 @@ class ConversationRobot:
                     continue
                 
                 # Try to connect with timeout
+                import serial  # Make sure we're using the correct serial module
                 self.arduino_serial = serial.Serial(port, self.arduino_baud_rate, timeout=1)
                 time.sleep(2)  # Wait for Arduino to reset
                 
@@ -3777,6 +3925,28 @@ class ConversationRobot:
                 print(f"Could not connect to {port}: {e}")
         
         if is_raspberry_pi:
+            # Try the approach from the user's example code
+            try:
+                print("\nTrying user-provided approach for Arduino connection...")
+                import serial
+                arduino_port = '/dev/ttyACM0'  # Default port to try
+                baud_rate = 9600
+                
+                arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+                time.sleep(2)  # Wait for connection to stabilize
+                
+                # Send a test command
+                arduino.write("idle\n".encode('utf-8'))
+                print(f"✓ Sent test command to {arduino_port}")
+                
+                # Update our connection
+                self.arduino_serial = arduino
+                self.arduino_port = arduino_port
+                print(f"Successfully connected to Arduino on {arduino_port} using alternative method")
+                return True
+            except Exception as e:
+                print(f"Alternative approach failed: {e}")
+            
             print("\nTroubleshooting tips for Raspberry Pi:")
             print("1. Make sure the Arduino is connected via USB")
             print("2. Try running 'lsusb' to see if Arduino is detected")
@@ -3785,6 +3955,8 @@ class ConversationRobot:
             print("   sudo usermod -a -G dialout $USER")
             print("   (logout and login again for changes to take effect)")
             print("5. Try unplugging and reconnecting the Arduino")
+            print("6. Try the following command to fix permissions:")
+            print("   sudo chmod 666 /dev/ttyACM0")
         
         print("Could not find Arduino on any common ports")
         return False
@@ -3938,80 +4110,50 @@ class ConversationRobot:
             return False
     
     def send_message_to_arduino(self, message):
-        """Send a message to the Arduino with improved reliability for Raspberry Pi"""
+        """Send a message to the Arduino with improved reliability"""
         # Make sure message ends with newline for Arduino's Serial.readStringUntil('\n')
         if not message.endswith('\n'):
             message += '\n'
+        
+        # Make sure serial is properly imported
+        try:
+            import serial
+        except ImportError:
+            print("Error importing serial library. Arduino communication not available.")
+            return False
             
         if not self.arduino_serial:
-            print("⚠️ Arduino connection not established, attempting to reconnect...")
+            print("Arduino connection not established, attempting to reconnect...")
             if not self.setup_arduino_connection():
-                print("❌ Could not establish Arduino connection to send message")
+                print("Could not establish Arduino connection to send message")
                 
-                # Check if we're on a Raspberry Pi for specialized error handling
-                is_raspberry_pi = False
+                # If we're on a Raspberry Pi, try the direct approach from the user's example
                 if platform.system() == 'Linux':
                     try:
-                        with open('/proc/cpuinfo', 'r') as f:
-                            if 'Raspberry Pi' in f.read():
-                                is_raspberry_pi = True
-                    except:
-                        pass
-                
-                if is_raspberry_pi:
-                    # For Raspberry Pi, try direct connection as a last resort
-                    try:
-                        print("Attempting direct connection to Arduino on Raspberry Pi...")
-                        # Try the exact code from the user's working example
-                        try:
-                            import serial
-                            import time
-                            arduino_port = '/dev/ttyACM0' 
-                            baud_rate = 9600
-                            
-                            print(f"Opening direct connection to {arduino_port}...")
-                            arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
-                            time.sleep(2)  # Wait for connection to establish
-                            
-                            # Send the message directly
-                            cmd = message.strip()
-                            arduino.write(cmd.encode('utf-8'))
-                            print(f"✓ Sent: {cmd}")
-                            
-                            # Wait for response
-                            time.sleep(0.5)
-                            if arduino.in_waiting:
-                                response = arduino.readline().decode('utf-8', errors='ignore').strip()
-                                print(f"Arduino response: {response}")
-                            
-                            # Don't close the connection - keep it open for future commands
-                            self.arduino_serial = arduino
-                            self.arduino_port = arduino_port
-                            print("✅ Direct connection successful! Using this connection for future commands.")
-                            return True
-                        except Exception as direct_e:
-                            print(f"❌ Direct connection failed: {direct_e}")
-                            
-                            # Try with sudo chmod as last resort
-                            try:
-                                import subprocess
-                                print("Attempting to fix permissions with sudo...")
-                                subprocess.run(['sudo', 'chmod', '666', '/dev/ttyACM0'], check=False)
-                                time.sleep(0.5)
-                                
-                                # Try again after permission fix
-                                arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
-                                time.sleep(2)
-                                arduino.write(message.encode('utf-8'))
-                                print(f"✓ Sent after permission fix: {message.strip()}")
-                                self.arduino_serial = arduino
-                                self.arduino_port = '/dev/ttyACM0'
-                                return True
-                            except Exception as e:
-                                print(f"❌ All connection attempts failed: {e}")
+                        print("Trying direct Arduino connection as last resort...")
+                        arduino_port = '/dev/ttyACM0'  # Default port to try
+                        baud_rate = 9600
+                        
+                        arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+                        time.sleep(2)  # Wait for connection to stabilize
+                        
+                        # Send the actual message
+                        print(f"Sending message to Arduino: {message.strip()}")
+                        arduino.write(message.encode('utf-8'))
+                        print(f"✓ Sent message directly to {arduino_port}")
+                        
+                        # Update our connection
+                        self.arduino_serial = arduino
+                        self.arduino_port = arduino_port
+                        return True
                     except Exception as e:
-                        print(f"❌ Last resort connection failed: {e}")
+                        print(f"Direct connection failed: {e}")
                 
+                # If we get here, we couldn't connect
+                print("Arduino connection failed - robot movements will not work")
+                
+                # Continue with TTS functionality even if Arduino fails
+                print("Continuing with TTS functionality only")
                 return False
         
         # Maximum retry attempts
@@ -4020,43 +4162,34 @@ class ConversationRobot:
         
         while retry_count < max_retries:
             try:
-                # Check if connection is still open
-                if not self.arduino_serial.is_open:
-                    print("Serial port is closed, reopening...")
-                    self.arduino_serial.open()
-                    time.sleep(1)  # Wait for connection to establish
-                
                 # Clear any pending data in the buffer
-                self.arduino_serial.reset_input_buffer()
+                try:
+                    while self.arduino_serial.in_waiting:
+                        self.arduino_serial.read(self.arduino_serial.in_waiting)
+                except Exception as e:
+                    print(f"Error clearing buffer: {e}")
                 
-                # Prepare the command - ensure it has proper encoding and line ending
-                cmd_bytes = message.encode('utf-8')
                 print(f"Sending message to Arduino: {message.strip()}")
+                self.arduino_serial.write(message.encode())
                 
-                # Write the command and flush to ensure it's sent immediately
-                bytes_written = self.arduino_serial.write(cmd_bytes)
-                self.arduino_serial.flush()
-                
-                # Verify bytes were written
-                if bytes_written != len(cmd_bytes):
-                    print(f"⚠️ Warning: Only {bytes_written} of {len(cmd_bytes)} bytes written")
-                
-                # Give the Arduino time to process and respond
-                time.sleep(0.5)
+                try:
+                    self.arduino_serial.flush()  # Ensure data is sent immediately
+                except Exception as e:
+                    print(f"Error flushing buffer (non-critical): {e}")
+                    
+                time.sleep(0.2)  # Small delay to ensure message is sent and processed
                 
                 # Try to read response if Arduino sends any
-                if self.arduino_serial.in_waiting:
-                    response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
-                    print(f"Arduino response: {response}")
-                
-                # Send a follow-up newline character to ensure command is processed
-                # This helps with some Arduino sketches that might need multiple newlines
-                self.arduino_serial.write(b'\n')
-                self.arduino_serial.flush()
+                try:
+                    if self.arduino_serial.in_waiting:
+                        response = self.arduino_serial.readline().decode('utf-8', errors='ignore').strip()
+                        print(f"Arduino response: {response}")
+                except Exception as e:
+                    print(f"Error reading response (non-critical): {e}")
                 
                 return True
             except serial.SerialException as e:
-                print(f"❌ Serial error on attempt {retry_count+1}: {e}")
+                print(f"Serial error on attempt {retry_count+1}: {e}")
                 retry_count += 1
                 
                 if retry_count < max_retries:
@@ -4064,36 +4197,19 @@ class ConversationRobot:
                     try:
                         # Close and reopen the connection
                         if self.arduino_serial:
-                            if self.arduino_serial.is_open:
-                                self.arduino_serial.close()
+                            self.arduino_serial.close()
                         time.sleep(1)
                         self.setup_arduino_connection()
                     except Exception as reconnect_error:
-                        print(f"❌ Reconnection failed: {reconnect_error}")
+                        print(f"Reconnection failed: {reconnect_error}")
             except Exception as e:
-                print(f"❌ Failed to send message to Arduino: {e}")
+                print(f"Failed to send message to Arduino: {e}")
                 retry_count += 1
                 time.sleep(0.5)
         
-        # Last resort - try direct connection if all else fails
-        try:
-            print("All standard attempts failed. Trying direct connection as last resort...")
-            # Close existing connection if open
-            if self.arduino_serial and self.arduino_serial.is_open:
-                self.arduino_serial.close()
-            
-            # Try direct connection with minimal settings
-            import serial
-            arduino = serial.Serial(self.arduino_port, 9600, timeout=1)
-            time.sleep(2)
-            arduino.write(message.encode('utf-8'))
-            print(f"✓ Sent via last resort method: {message.strip()}")
-            self.arduino_serial = arduino  # Update the connection object
-            return True
-        except Exception as last_e:
-            print(f"❌ Last resort method failed: {last_e}")
-        
-        print(f"❌ Failed to send message to Arduino after {max_retries} attempts")
+        print(f"Failed to send message to Arduino after {max_retries} attempts")
+        # Continue with TTS functionality even if Arduino fails
+        print("Continuing with TTS functionality only")
         return False
     
     def verify_lemonfox_api(self):
@@ -4134,24 +4250,12 @@ class ConversationRobot:
             return False
     
     def scan_raspberry_pi_arduino(self):
-        """Specifically scan for Arduino devices connected to a Raspberry Pi with enhanced reliability"""
+        """Specifically scan for Arduino devices connected to a Raspberry Pi"""
         try:
             print("Performing specialized Arduino scan for Raspberry Pi...")
             found_ports = []
             
-            # PRIORITY 1: Always check for the most common Arduino port first
-            if os.path.exists('/dev/ttyACM0'):
-                print("✅ Found standard Arduino port: /dev/ttyACM0")
-                # Automatically fix permissions for the standard port
-                try:
-                    import subprocess
-                    subprocess.run(['sudo', 'chmod', '666', '/dev/ttyACM0'], check=False)
-                    print("Applied permissions fix for /dev/ttyACM0")
-                except:
-                    pass
-                found_ports.append('/dev/ttyACM0')
-            
-            # PRIORITY 2: Check USB devices 
+            # Check USB devices first
             try:
                 import subprocess
                 # Check USB devices
@@ -4159,25 +4263,21 @@ class ConversationRobot:
                 print("USB devices found:")
                 print(usb_output)
                 
-                # Look for Arduino-related USB devices with expanded keyword list
+                # Look for Arduino-related USB devices
                 arduino_found = False
-                arduino_keywords = ['arduino', 'uno', 'mega', 'leonardo', 'micro', 'atmega', 'ch340', 'cp210', 'ftdi']
-                
                 for line in usb_output.split('\n'):
-                    if any(keyword in line.lower() for keyword in arduino_keywords):
-                        print(f"✅ Found Arduino USB device: {line}")
+                    if any(keyword in line.lower() for keyword in ['arduino', 'uno', 'mega', 'leonardo', 'micro']):
+                        print(f"Found Arduino USB device: {line}")
                         arduino_found = True
                 
                 if arduino_found:
                     print("Arduino device detected in USB list")
                     
-                    # Try to find which port it's connected to using multiple methods
-                    
-                    # Method 1: Check dmesg for recent connections
+                    # Try to find which port it's connected to using dmesg
                     try:
                         # Look at recent kernel messages for Arduino connection
-                        dmesg_output = subprocess.check_output(['dmesg', '|', 'grep', '-i', 'arduino\\|tty\\|acm\\|usb\\|ch340\\|ftdi\\|cp210', '|', 'tail', '-n', '30'], 
-                                                             shell=True).decode('utf-8', errors='ignore')
+                        dmesg_output = subprocess.check_output(['dmesg', '|', 'grep', '-i', 'arduino\\|tty\\|acm\\|usb', '|', 'tail', '-n', '20'], 
+                                                              shell=True).decode('utf-8', errors='ignore')
                         
                         # Look for tty assignments in dmesg output
                         for line in dmesg_output.split('\n'):
@@ -4191,77 +4291,23 @@ class ConversationRobot:
                                             tty_name = '/dev/' + tty_name
                                         
                                         if os.path.exists(tty_name) and tty_name not in found_ports:
-                                            print(f"✅ Found potential Arduino port from dmesg: {tty_name}")
+                                            print(f"Found potential Arduino port from dmesg: {tty_name}")
                                             found_ports.append(tty_name)
                     except Exception as e:
-                        print(f"Note: Could not search dmesg: {e}")
-                    
-                    # Method 2: Use ls -l to check for recent device files
-                    try:
-                        ls_output = subprocess.check_output(['ls', '-l', '/dev/tty*']).decode('utf-8')
-                        print("Available TTY devices:")
-                        print(ls_output)
-                        
-                        # Look for devices that might be Arduino
-                        for line in ls_output.split('\n'):
-                            if 'ttyACM' in line or 'ttyUSB' in line:
-                                parts = line.split()
-                                if len(parts) > 8:  # Make sure we have enough parts
-                                    device_path = parts[-1]
-                                    if os.path.exists(device_path) and device_path not in found_ports:
-                                        print(f"✅ Found potential Arduino port from ls: {device_path}")
-                                        found_ports.append(device_path)
-                    except Exception as e:
-                        print(f"Note: Error listing TTY devices: {e}")
-                        
-                    # Method 3: Try to use udevadm to get more device info
-                    try:
-                        for pattern in ['/dev/ttyACM*', '/dev/ttyUSB*']:
-                            for device in glob.glob(pattern):
-                                try:
-                                    udev_output = subprocess.check_output(['udevadm', 'info', '--name', device]).decode('utf-8')
-                                    # Look for Arduino-related strings
-                                    if any(keyword in udev_output.lower() for keyword in arduino_keywords):
-                                        if device not in found_ports:
-                                            print(f"✅ Found Arduino port from udevadm: {device}")
-                                            found_ports.append(device)
-                                except:
-                                    pass
-                    except Exception as e:
-                        print(f"Note: Error using udevadm: {e}")
+                        print(f"Error searching dmesg: {e}")
             except Exception as e:
-                print(f"Note: Error checking USB devices: {e}")
+                print(f"Error checking USB devices: {e}")
             
-            # PRIORITY 3: Check for common Arduino port patterns
-            common_patterns = ['/dev/ttyACM*', '/dev/ttyUSB*', '/dev/ttyS*']
+            # Check for common Arduino port patterns
+            common_patterns = ['/dev/ttyACM*', '/dev/ttyUSB*']
             for pattern in common_patterns:
                 matching_ports = glob.glob(pattern)
                 for port in matching_ports:
                     if port not in found_ports:
                         found_ports.append(port)
-                        print(f"✅ Found potential Arduino port: {port}")
+                        print(f"Found potential Arduino port: {port}")
             
-            # PRIORITY 4: If we still haven't found any ports, try to create them
-            if not found_ports:
-                print("No Arduino ports found. Attempting to create device nodes...")
-                try:
-                    # Try to load necessary modules
-                    subprocess.run(['sudo', 'modprobe', 'usbserial'], check=False)
-                    subprocess.run(['sudo', 'modprobe', 'ftdi_sio'], check=False)
-                    subprocess.run(['sudo', 'modprobe', 'cdc_acm'], check=False)
-                    time.sleep(1)
-                    
-                    # Check if any new devices appeared
-                    for pattern in ['/dev/ttyACM*', '/dev/ttyUSB*']:
-                        matching_ports = glob.glob(pattern)
-                        for port in matching_ports:
-                            if port not in found_ports:
-                                found_ports.append(port)
-                                print(f"✅ Created new Arduino port: {port}")
-                except Exception as e:
-                    print(f"Note: Error creating device nodes: {e}")
-            
-            # Check and fix permissions on found ports
+            # Check permissions on found ports
             for port in found_ports:
                 try:
                     import stat
@@ -4270,146 +4316,24 @@ class ConversationRobot:
                     writable = port_stat.st_mode & stat.S_IWUSR
                     
                     if not (readable and writable):
-                        print(f"⚠️ Warning: {port} has permission issues")
+                        print(f"Warning: {port} may have permission issues")
                         print(f"Current permissions: {oct(port_stat.st_mode & 0o777)}")
-                        print("Attempting to fix permissions...")
-                        try:
-                            subprocess.run(['sudo', 'chmod', '666', port], check=False)
-                            print(f"✅ Applied permission fix for {port}")
-                        except:
-                            print("❌ Failed to fix permissions automatically")
-                            print(f"Please run manually: sudo chmod 666 {port}")
+                        print("You may need to: sudo chmod 666 " + port)
                 except Exception as e:
-                    print(f"Note: Error checking permissions for {port}: {e}")
+                    print(f"Error checking permissions for {port}: {e}")
             
-            # If we found any ports, prioritize ttyACM0 if it exists
-            if '/dev/ttyACM0' in found_ports:
-                print(f"✅ Using standard Arduino port: /dev/ttyACM0")
-                return '/dev/ttyACM0'
-            elif found_ports:
-                # Otherwise use the first port found
-                print(f"✅ Using first detected port: {found_ports[0]}")
+            # If we found any ports, return the first one
+            if found_ports:
+                print(f"Using first detected port: {found_ports[0]}")
                 return found_ports[0]
             
-            # If still no ports found, try one last direct approach
-            print("⚠️ No Arduino ports found through scanning. Trying direct approach...")
-            try:
-                # Try to directly create and access the standard Arduino port
-                import subprocess
-                subprocess.run(['sudo', 'mknod', '/dev/ttyACM0', 'c', '166', '0'], check=False)
-                subprocess.run(['sudo', 'chmod', '666', '/dev/ttyACM0'], check=False)
-                
-                # Check if it worked
-                if os.path.exists('/dev/ttyACM0'):
-                    print("✅ Successfully created /dev/ttyACM0")
-                    return '/dev/ttyACM0'
-            except Exception as e:
-                print(f"❌ Error in direct approach: {e}")
-            
-            print("❌ No Arduino ports found or created")
             return None
         except Exception as e:
-            print(f"❌ Error in Raspberry Pi Arduino scan: {e}")
+            print(f"Error in Raspberry Pi Arduino scan: {e}")
             return None
 
 
 # External functions outside the ConversationRobot class
-
-def test_arduino_direct():
-    """Test direct Arduino connection using simplified code for Raspberry Pi"""
-    print("\n=== DIRECT ARDUINO CONNECTION TEST ===")
-    print("Testing direct connection to Arduino on standard port...")
-    
-    try:
-        import serial
-        import time
-        import subprocess
-        
-        # Try to fix permissions first
-        try:
-            subprocess.run(['sudo', 'chmod', '666', '/dev/ttyACM0'], check=False)
-            print("✅ Applied permissions fix for /dev/ttyACM0")
-        except:
-            pass
-        
-        # Standard Arduino port for Raspberry Pi
-        arduino_port = '/dev/ttyACM0'
-        baud_rate = 9600
-        
-        # Check if port exists
-        if not os.path.exists(arduino_port):
-            print(f"❌ Port {arduino_port} does not exist")
-            print("Checking available ports...")
-            
-            # List available ports
-            try:
-                import glob
-                available_ports = glob.glob('/dev/tty*')
-                print(f"Available ports: {', '.join(available_ports)}")
-                
-                # Check for alternative Arduino ports
-                arduino_ports = [p for p in available_ports if 'ACM' in p or 'USB' in p]
-                if arduino_ports:
-                    print(f"Found potential Arduino ports: {', '.join(arduino_ports)}")
-                    arduino_port = arduino_ports[0]
-                    print(f"Using first available port: {arduino_port}")
-                else:
-                    print("❌ No potential Arduino ports found")
-                    return False
-            except Exception as e:
-                print(f"❌ Error listing ports: {e}")
-                return False
-        
-        print(f"Connecting to Arduino on {arduino_port} at {baud_rate} baud...")
-        
-        # Open serial connection
-        arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
-        print("✅ Serial connection opened")
-        
-        # Wait for Arduino to reset after connection
-        print("Waiting for Arduino to initialize...")
-        time.sleep(2)
-        
-        # Test commands to send
-        test_commands = ["idle", "talk", "shake_hand", "happy", "idle"]
-        
-        for cmd in test_commands:
-            # Add newline for Arduino's Serial.readStringUntil('\n')
-            message = cmd + "\n"
-            
-            # Send command
-            print(f"Sending command: {cmd}")
-            arduino.write(message.encode('utf-8'))
-            arduino.flush()  # Ensure data is sent
-            
-            # Wait for response
-            time.sleep(1)
-            
-            # Check for response
-            if arduino.in_waiting:
-                response = arduino.readline().decode('utf-8', errors='ignore').strip()
-                print(f"✅ Arduino response: {response}")
-            else:
-                print("ℹ️ No response (this is normal for many Arduino sketches)")
-            
-            # Wait between commands
-            time.sleep(2)
-        
-        # Close the connection
-        arduino.close()
-        print("✅ Connection closed")
-        print("✅ Direct Arduino test completed successfully!")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Direct Arduino test failed: {e}")
-        print("\nTroubleshooting tips:")
-        print("1. Make sure Arduino is connected via USB")
-        print("2. Try running: sudo chmod 666 /dev/ttyACM0")
-        print("3. Check if Arduino is visible with: lsusb")
-        print("4. Try unplugging and reconnecting the Arduino")
-        print("5. Make sure the Arduino sketch is uploaded and working")
-        return False
 
 def check_env_file():
     """Check if .env file exists and contains required keys"""
@@ -4520,7 +4444,6 @@ if __name__ == "__main__":
     test_camera_only = False
     test_emotion_only = False
     test_arduino_only = False
-    test_arduino_direct = False
     show_webcam = False
     
     if len(sys.argv) > 1:
@@ -4537,14 +4460,6 @@ if __name__ == "__main__":
         elif sys.argv[1] in ["--test-arduino", "-ta"]:
             test_arduino_only = True
             print("Running in Arduino test mode only")
-        elif sys.argv[1] in ["--test-arduino-direct", "-tad"]:
-            test_arduino_direct = True
-            print("Running in direct Arduino test mode only")
-    
-    # If direct Arduino test mode is enabled, run it without creating the robot instance
-    if test_arduino_direct:
-        test_arduino_direct()
-        exit(0)
     
     # List available default wake words
     print(f"Available default wake words: {', '.join(DEFAULT_WAKE_WORDS)}")

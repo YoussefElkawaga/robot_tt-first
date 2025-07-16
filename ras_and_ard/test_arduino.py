@@ -1,182 +1,192 @@
 #!/usr/bin/env python3
-import serial
-import time
+"""
+Simple test script for Arduino connection on Raspberry Pi
+This script attempts to connect to an Arduino and send commands
+"""
+
 import os
-import sys
-import platform
+import time
 import glob
+import subprocess
 
-def list_serial_ports():
-    """List all available serial ports"""
+def test_arduino_connection():
+    """Test direct connection to Arduino on Raspberry Pi"""
+    print("\n=== ARDUINO CONNECTION TEST ===")
+    
     try:
-        import serial.tools.list_ports
-        ports = serial.tools.list_ports.comports()
+        # First try to fix permissions
+        try:
+            print("Attempting to fix permissions for Arduino port...")
+            subprocess.run(['sudo', 'chmod', '666', '/dev/ttyACM0'], check=False)
+            print("✅ Permission fix applied")
+        except:
+            print("Note: Could not apply permission fix automatically")
         
-        if not ports:
-            print("No serial ports found. Make sure your Arduino is connected.")
-            return []
-        
-        print("\nAvailable serial ports:")
-        port_list = []
-        for i, port in enumerate(ports):
-            description = f"{port.device}"
-            if port.description:
-                description += f" - {port.description}"
-            if port.manufacturer:
-                description += f" ({port.manufacturer})"
-            if "Arduino" in port.description or "Arduino" in str(port.manufacturer):
-                description += " [ARDUINO DETECTED]"
+        # Check for Arduino in USB devices
+        try:
+            print("\nChecking USB devices...")
+            usb_output = subprocess.check_output(['lsusb']).decode('utf-8')
+            print(usb_output)
             
-            print(f"  {i+1}. {description}")
-            port_list.append(port.device)
+            # Check if Arduino is visible
+            if any(keyword in usb_output.lower() for keyword in ['arduino', 'uno', 'mega', 'leonardo', 'micro']):
+                print("✅ Arduino detected in USB devices")
+            else:
+                print("⚠️ No Arduino detected in USB devices. Check your connection.")
+        except:
+            print("Note: Could not check USB devices")
         
-        return port_list
-    except ImportError:
-        print("Serial tools not available. Cannot list serial ports.")
-        return []
-    except Exception as e:
-        print(f"Error listing serial ports: {e}")
-        return []
-
-def find_arduino_port():
-    """Find the most likely Arduino port"""
-    # Default ports by platform
-    default_port = "COM3" if platform.system() == "Windows" else "/dev/ttyACM0"
-    
-    # Try to find Arduino ports
-    try:
-        import serial.tools.list_ports
-        ports = serial.tools.list_ports.comports()
+        # List available serial ports
+        print("\nChecking available serial ports...")
+        available_ports = []
         
-        # First look for ports that explicitly identify as Arduino
-        for port in ports:
-            if port.manufacturer and "arduino" in port.manufacturer.lower():
-                print(f"Found Arduino by manufacturer: {port.device}")
-                return port.device
-            if port.description and "arduino" in port.description.lower():
-                print(f"Found Arduino by description: {port.device}")
-                return port.device
+        # Check standard Arduino ports first
+        if os.path.exists('/dev/ttyACM0'):
+            available_ports.append('/dev/ttyACM0')
+            print("✅ Found standard Arduino port: /dev/ttyACM0")
         
-        # If we're on a Raspberry Pi, look for /dev/serial/by-id paths
-        if platform.system() == 'Linux':
-            try:
-                by_id_path = "/dev/serial/by-id"
-                if os.path.exists(by_id_path):
-                    arduino_paths = [os.path.join(by_id_path, f) for f in os.listdir(by_id_path) 
-                                    if "arduino" in f.lower()]
-                    if arduino_paths:
-                        print(f"Found Arduino at stable path: {arduino_paths[0]}")
-                        return arduino_paths[0]
-            except:
-                pass
+        # Find all tty devices
+        try:
+            all_ports = glob.glob('/dev/tty*')
+            arduino_ports = [p for p in all_ports if ('ACM' in p or 'USB' in p) and p not in available_ports]
+            if arduino_ports:
+                available_ports.extend(arduino_ports)
+                print(f"✅ Found additional Arduino ports: {', '.join(arduino_ports)}")
             
-            # Check common Raspberry Pi ports
-            pi_ports = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1']
-            for port in pi_ports:
-                if os.path.exists(port):
-                    print(f"Found potential Arduino port: {port}")
-                    return port
+            print(f"\nAll available TTY devices: {', '.join(all_ports)}")
+        except Exception as e:
+            print(f"Note: Error listing ports: {e}")
         
-        # If no Arduino found, return first available port or default
-        if ports:
-            print(f"No Arduino specifically identified. Using first available port: {ports[0].device}")
-            return ports[0].device
-    except:
-        pass
-    
-    print(f"Using default port: {default_port}")
-    return default_port
-
-def test_arduino_connection(port=None, baud_rate=9600):
-    """Test Arduino connection by sending commands"""
-    if port is None:
-        port = find_arduino_port()
-    
-    print(f"\nTesting Arduino connection on {port} at {baud_rate} baud...")
-    
-    try:
-        # Open the serial connection
-        arduino = serial.Serial(port, baud_rate, timeout=1)
-        print("✅ Serial connection opened successfully")
+        # Select port to use
+        if not available_ports:
+            print("❌ No Arduino ports found. Please check your connection.")
+            return False
         
-        # Wait for Arduino to reset after connection
+        arduino_port = available_ports[0]
+        print(f"\nUsing port: {arduino_port}")
+        
+        # Import serial here to avoid issues if not installed
+        try:
+            import serial
+        except ImportError:
+            print("❌ PySerial not installed. Installing now...")
+            subprocess.check_call(['pip3', 'install', 'pyserial'])
+            import serial
+        
+        # Connect to Arduino
+        print(f"\nConnecting to Arduino on {arduino_port}...")
+        arduino = serial.Serial(arduino_port, 9600, timeout=1)
+        print("✅ Connection established")
+        
+        # Wait for Arduino to reset
+        print("Waiting for Arduino to initialize...")
         time.sleep(2)
         
-        # Send test commands
-        test_commands = ["idle\n", "talk\n", "shake_hand\n", "happy\n", "idle\n"]
+        # Test commands
+        test_commands = ["idle", "talk", "shake_hand", "happy", "idle"]
         
+        print("\nSending test commands:")
         for cmd in test_commands:
-            print(f"Sending command: {cmd.strip()}")
-            arduino.write(cmd.encode('utf-8'))
-            time.sleep(1)  # Wait for Arduino to process
+            # Add newline for Arduino's Serial.readStringUntil('\n')
+            message = cmd + "\n"
+            
+            # Send command
+            print(f"\nSending: '{cmd}'")
+            arduino.write(message.encode('utf-8'))
+            arduino.flush()  # Ensure data is sent
+            
+            # Wait for response
+            time.sleep(1)
             
             # Check for response
             if arduino.in_waiting:
                 response = arduino.readline().decode('utf-8', errors='ignore').strip()
-                print(f"Arduino response: {response}")
+                print(f"✅ Arduino response: {response}")
+            else:
+                print("ℹ️ No response (this is normal for many Arduino sketches)")
             
             # Wait between commands
             time.sleep(2)
         
         # Close the connection
         arduino.close()
-        print("✅ Arduino test completed successfully!")
+        print("\n✅ Test completed successfully!")
         return True
-    
+        
     except Exception as e:
-        print(f"❌ Error: {e}")
-        
-        # If permission error on Linux, suggest fix
-        if "permission" in str(e).lower() and platform.system() == "Linux":
-            print("\nPermission error detected. Try the following:")
-            print(f"1. Run: sudo chmod 666 {port}")
-            print("2. Or add your user to the dialout group:")
-            print("   sudo usermod -a -G dialout $USER")
-            print("   (logout and login again for changes to take effect)")
-        
+        print(f"\n❌ Test failed: {e}")
+        print("\nTroubleshooting tips:")
+        print("1. Make sure Arduino is connected via USB")
+        print("2. Try running: sudo chmod 666 /dev/ttyACM0")
+        print("3. Check if Arduino is visible with: lsusb")
+        print("4. Try unplugging and reconnecting the Arduino")
+        print("5. Make sure the Arduino sketch is uploaded and working")
         return False
 
-def main():
-    """Main function"""
-    print("Arduino Connection Test Script")
-    print("=============================")
+def send_single_command(command):
+    """Send a single command to the Arduino"""
+    print(f"\n=== Sending command: {command} ===")
     
-    # List available ports
-    available_ports = list_serial_ports()
-    
-    # If command line arguments are provided, use them
-    if len(sys.argv) > 1:
-        port = sys.argv[1]
-        baud_rate = int(sys.argv[2]) if len(sys.argv) > 2 else 9600
-        test_arduino_connection(port, baud_rate)
-    else:
-        # Let user select a port or use auto-detection
-        if available_ports:
-            print("\nOptions:")
-            print("1. Auto-detect Arduino port")
-            for i, port in enumerate(available_ports):
-                print(f"{i+2}. Use {port}")
-            
-            try:
-                choice = input("\nEnter your choice (default: 1): ").strip()
-                if not choice or choice == "1":
-                    port = find_arduino_port()
-                else:
-                    idx = int(choice) - 2
-                    if 0 <= idx < len(available_ports):
-                        port = available_ports[idx]
-                    else:
-                        print("Invalid choice. Using auto-detection.")
-                        port = find_arduino_port()
-                
-                test_arduino_connection(port)
-            except Exception as e:
-                print(f"Error: {e}")
-                print("Using auto-detection.")
-                test_arduino_connection()
+    try:
+        # Find Arduino port
+        arduino_port = None
+        if os.path.exists('/dev/ttyACM0'):
+            arduino_port = '/dev/ttyACM0'
         else:
-            # No ports found, try auto-detection
-            test_arduino_connection()
+            # Try to find other Arduino ports
+            arduino_ports = [p for p in glob.glob('/dev/tty*') if 'ACM' in p or 'USB' in p]
+            if arduino_ports:
+                arduino_port = arduino_ports[0]
+        
+        if not arduino_port:
+            print("❌ No Arduino port found")
+            return False
+        
+        # Try to fix permissions
+        try:
+            subprocess.run(['sudo', 'chmod', '666', arduino_port], check=False)
+        except:
+            pass
+        
+        # Import serial
+        import serial
+        
+        # Connect to Arduino
+        print(f"Connecting to Arduino on {arduino_port}...")
+        arduino = serial.Serial(arduino_port, 9600, timeout=1)
+        time.sleep(2)  # Wait for Arduino to reset
+        
+        # Send command
+        message = command
+        if not message.endswith('\n'):
+            message += '\n'
+            
+        print(f"Sending: '{command}'")
+        arduino.write(message.encode('utf-8'))
+        arduino.flush()
+        
+        # Wait for response
+        time.sleep(1)
+        if arduino.in_waiting:
+            response = arduino.readline().decode('utf-8', errors='ignore').strip()
+            print(f"✅ Arduino response: {response}")
+        
+        # Close the connection
+        arduino.close()
+        print(f"✅ Command '{command}' sent successfully")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Failed to send command: {e}")
+        return False
 
 if __name__ == "__main__":
-    main() 
+    import sys
+    
+    # Check if a specific command was provided
+    if len(sys.argv) > 1:
+        command = sys.argv[1]
+        send_single_command(command)
+    else:
+        # Run the full test
+        test_arduino_connection() 
