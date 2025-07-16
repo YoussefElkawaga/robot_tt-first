@@ -445,14 +445,36 @@ class ConversationRobot:
                     with open('/sys/firmware/devicetree/base/model', 'r') as f:
                         model = f.read()
                         if 'Raspberry Pi' in model:
-                            print(f"Detected {model.strip(chr(0))} - applying specific camera settings")
-                            # Enable the V4L2 driver for Pi Camera Module
-                            try:
-                                os.system("sudo modprobe bcm2835-v4l2")
-                                time.sleep(1)  # Give time for the module to load
-                                print("Loaded bcm2835-v4l2 module for Raspberry Pi camera")
-                            except Exception as cam_e:
-                                print(f"Could not load bcm2835-v4l2 module: {cam_e}")
+                            pi_model = model.strip(chr(0))
+                            print(f"Detected {pi_model} - applying specific camera settings")
+                            
+                            # Check if this is Raspberry Pi 5 (which uses libcamera)
+                            is_pi5 = '5' in pi_model
+                            
+                            if is_pi5:
+                                print("Raspberry Pi 5 detected - using libcamera framework")
+                                # For Pi 5, the camera should already be available through libcamera
+                                # Check if the device exists
+                                if os.path.exists('/dev/video0'):
+                                    print("Camera device found at /dev/video0")
+                                else:
+                                    print("Camera device not found at /dev/video0")
+                                    print("Trying to initialize libcamera...")
+                                    # Try to ensure the camera is initialized
+                                    try:
+                                        os.system("sudo modprobe -r bcm2835-v4l2 2>/dev/null")  # Remove old driver if loaded
+                                        time.sleep(1)
+                                    except Exception as e:
+                                        print(f"Note: {e}")
+                            else:
+                                # For older Pi models, load the V4L2 driver
+                                print("Older Raspberry Pi model detected - loading bcm2835-v4l2 driver")
+                                try:
+                                    os.system("sudo modprobe bcm2835-v4l2")
+                                    time.sleep(1)  # Give time for the module to load
+                                    print("Loaded bcm2835-v4l2 module for Raspberry Pi camera")
+                                except Exception as cam_e:
+                                    print(f"Could not load bcm2835-v4l2 module: {cam_e}")
                 except Exception as f_e:
                     print(f"Error reading device model: {f_e}")
             
@@ -464,7 +486,7 @@ class ConversationRobot:
             if not self.emotion_cap.isOpened():
                 print("Error: Cannot open webcam at index 0, trying alternative indices...")
                 # Try alternative device numbers
-                for i in range(1, 3):
+                for i in range(1, 4):  # Try up to device 3
                     print(f"Trying camera device {i}...")
                     self.emotion_cap = cv2.VideoCapture(i)
                     if self.emotion_cap.isOpened():
@@ -501,6 +523,73 @@ class ConversationRobot:
         except Exception as e:
             print(f"Error setting up emotion detection: {e}")
             self.use_emotion_detection = False
+            return False
+    
+    def configure_raspberry_pi_camera(self):
+        """Configure Raspberry Pi camera settings for optimal performance"""
+        if not self.emotion_cap or not self.emotion_cap.isOpened():
+            print("Camera not initialized, cannot configure")
+            return False
+            
+        try:
+            # Check if we're on a Raspberry Pi
+            is_raspberry_pi = False
+            is_pi5 = False
+            if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
+                try:
+                    with open('/sys/firmware/devicetree/base/model', 'r') as f:
+                        model = f.read()
+                        if 'Raspberry Pi' in model:
+                            is_raspberry_pi = True
+                            pi_model = model.strip(chr(0))
+                            is_pi5 = '5' in pi_model
+                            print(f"Configuring camera for {pi_model}")
+                except:
+                    pass
+            
+            if not is_raspberry_pi:
+                print("Not running on Raspberry Pi, skipping camera configuration")
+                return True
+                
+            # Set camera properties for better performance on Raspberry Pi
+            print("Setting Raspberry Pi camera parameters...")
+            
+            # Different settings for Pi 5 vs older models
+            if is_pi5:
+                # For Pi 5 with libcamera, use higher resolution but still optimize
+                print("Using optimized settings for Raspberry Pi 5 with libcamera")
+                
+                # Try to set resolution - Pi 5 might support higher resolutions efficiently
+                self.emotion_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self.emotion_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                
+                # Set FPS - Pi 5 can handle higher FPS
+                self.emotion_cap.set(cv2.CAP_PROP_FPS, 20)
+            else:
+                # For older Pi models, use more conservative settings
+                print("Using conservative settings for older Raspberry Pi model")
+                
+                # Set resolution to 320x240 for faster processing
+                self.emotion_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                self.emotion_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                
+                # Set lower FPS to reduce CPU usage
+                self.emotion_cap.set(cv2.CAP_PROP_FPS, 15)
+            
+            # Common settings for all Pi models
+            # Set auto exposure for better face detection
+            self.emotion_cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+            
+            # Check if settings were applied
+            actual_width = self.emotion_cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            actual_height = self.emotion_cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            actual_fps = self.emotion_cap.get(cv2.CAP_PROP_FPS)
+            
+            print(f"Camera configured with resolution: {actual_width}x{actual_height}, FPS: {actual_fps}")
+            return True
+            
+        except Exception as e:
+            print(f"Error configuring Raspberry Pi camera: {e}")
             return False
     
     def play_beep(self, frequency=1000, duration=200):
@@ -632,14 +721,23 @@ class ConversationRobot:
         process_every_n_frames = int(os.getenv("PROCESS_EVERY_N_FRAMES", "15"))
         
         # For Raspberry Pi, we might want to increase this value for better performance
+        is_pi5 = False
         if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
             try:
                 with open('/sys/firmware/devicetree/base/model', 'r') as f:
                     model = f.read()
                     if 'Raspberry Pi' in model:
-                        # Process fewer frames on Pi for better performance
-                        process_every_n_frames = max(process_every_n_frames, 20)
-                        print(f"Raspberry Pi detected: Processing every {process_every_n_frames} frames for better performance")
+                        pi_model = model.strip(chr(0))
+                        is_pi5 = '5' in pi_model
+                        
+                        if is_pi5:
+                            # Pi 5 has better performance, can process more frames
+                            process_every_n_frames = max(process_every_n_frames, 10)
+                            print(f"Raspberry Pi 5 detected: Processing every {process_every_n_frames} frames")
+                        else:
+                            # Older Pi models need to process fewer frames
+                            process_every_n_frames = max(process_every_n_frames, 20)
+                            print(f"Raspberry Pi detected: Processing every {process_every_n_frames} frames for better performance")
             except Exception as e:
                 print(f"Error reading device model: {e}")
         
@@ -664,7 +762,34 @@ class ConversationRobot:
                         print(f"Failed to read from camera {max_errors} times in a row, attempting to reinitialize...")
                         self.emotion_cap.release()
                         time.sleep(1)
-                        self.emotion_cap = cv2.VideoCapture(0)
+                        
+                        # Try different camera indices
+                        camera_opened = False
+                        for i in range(4):  # Try indices 0-3
+                            print(f"Trying to initialize camera at index {i}...")
+                            self.emotion_cap = cv2.VideoCapture(i)
+                            if self.emotion_cap.isOpened():
+                                print(f"Successfully reopened camera at index {i}")
+                                camera_opened = True
+                                break
+                                
+                        if not camera_opened:
+                            print("Failed to reopen camera at any index")
+                            # For Raspberry Pi 5, try to ensure libcamera is working
+                            if is_pi5:
+                                print("Attempting to restart camera on Raspberry Pi 5...")
+                                try:
+                                    # Check if the device exists
+                                    if not os.path.exists('/dev/video0'):
+                                        print("Camera device not found - attempting to initialize libcamera")
+                                        os.system("sudo service libcamera restart 2>/dev/null")
+                                        time.sleep(2)
+                                except Exception as e:
+                                    print(f"Error restarting libcamera: {e}")
+                                
+                                # Try again with index 0
+                                self.emotion_cap = cv2.VideoCapture(0)
+                        
                         error_count = 0
                     time.sleep(0.1)
                     continue
@@ -679,7 +804,11 @@ class ConversationRobot:
                 # Resize frame to improve performance if needed
                 height, width = frame.shape[:2]
                 if width > 320 or height > 240:
-                    frame = cv2.resize(frame, (320, 240))
+                    # For Pi 5, we can use a slightly larger size
+                    if is_pi5:
+                        frame = cv2.resize(frame, (480, 360))
+                    else:
+                        frame = cv2.resize(frame, (320, 240))
                 
                 # Detect emotions
                 try:
@@ -766,7 +895,15 @@ class ConversationRobot:
                             # If already using fallback, try to reinitialize everything
                             print("Already using fallback, trying to reinitialize detection")
                             try:
+                                # First try without MTCNN
                                 self.emotion_detector = FER(mtcnn=False)
+                                print("Reinitialized FER detector without MTCNN")
+                                
+                                # If that doesn't work after a while, try with MTCNN again
+                                if time.time() - last_detection_time > 60:
+                                    print("Still no detections, trying to reinitialize with MTCNN")
+                                    self.emotion_detector = FER(mtcnn=True)
+                                    print("Reinitialized FER detector with MTCNN")
                             except:
                                 pass
                         last_detection_time = time.time()  # Reset timer
@@ -2349,54 +2486,6 @@ class ConversationRobot:
             print(f"Error ensuring FER dependencies: {e}")
             return False
     
-    def configure_raspberry_pi_camera(self):
-        """Configure Raspberry Pi camera settings for optimal performance"""
-        if not self.emotion_cap or not self.emotion_cap.isOpened():
-            print("Camera not initialized, cannot configure")
-            return False
-            
-        try:
-            # Check if we're on a Raspberry Pi
-            is_raspberry_pi = False
-            if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
-                try:
-                    with open('/sys/firmware/devicetree/base/model', 'r') as f:
-                        model = f.read()
-                        if 'Raspberry Pi' in model:
-                            is_raspberry_pi = True
-                            print(f"Configuring camera for {model.strip(chr(0))}")
-                except:
-                    pass
-            
-            if not is_raspberry_pi:
-                print("Not running on Raspberry Pi, skipping camera configuration")
-                return True
-                
-            # Set camera properties for better performance on Raspberry Pi
-            print("Setting Raspberry Pi camera parameters...")
-            
-            # Set resolution to 320x240 for faster processing
-            self.emotion_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-            self.emotion_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-            
-            # Set lower FPS to reduce CPU usage
-            self.emotion_cap.set(cv2.CAP_PROP_FPS, 15)
-            
-            # Set auto exposure for better face detection
-            self.emotion_cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
-            
-            # Check if settings were applied
-            actual_width = self.emotion_cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-            actual_height = self.emotion_cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            actual_fps = self.emotion_cap.get(cv2.CAP_PROP_FPS)
-            
-            print(f"Camera configured with resolution: {actual_width}x{actual_height}, FPS: {actual_fps}")
-            return True
-            
-        except Exception as e:
-            print(f"Error configuring Raspberry Pi camera: {e}")
-            return False
-    
     def fallback_emotion_detection(self, frame):
         """Fallback method for emotion detection when MTCNN fails"""
         try:
@@ -2460,6 +2549,7 @@ class ConversationRobot:
         
         # Check for Raspberry Pi
         is_raspberry_pi = False
+        is_pi5 = False
         pi_model = "Unknown"
         if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
             try:
@@ -2467,7 +2557,32 @@ class ConversationRobot:
                     pi_model = f.read().strip(chr(0))
                     if 'Raspberry Pi' in pi_model:
                         is_raspberry_pi = True
+                        is_pi5 = '5' in pi_model
                         print(f"✅ Detected Raspberry Pi: {pi_model}")
+                        
+                        # Check for specific camera setup based on Pi model
+                        if is_pi5:
+                            print("ℹ️ Raspberry Pi 5 uses libcamera framework")
+                            # Check if libcamera is available
+                            try:
+                                result = os.system("libcamera-hello --help >/dev/null 2>&1")
+                                if result == 0:
+                                    print("✅ libcamera is available")
+                                else:
+                                    print("⚠️ libcamera-hello command not found - camera may still work with OpenCV")
+                            except:
+                                print("⚠️ Could not test libcamera availability")
+                        else:
+                            # Check for bcm2835-v4l2 module on older Pi models
+                            try:
+                                with open('/proc/modules', 'r') as modules:
+                                    if 'bcm2835_v4l2' in modules.read():
+                                        print("✅ bcm2835-v4l2 module is loaded")
+                                    else:
+                                        print("⚠️ bcm2835-v4l2 module is not loaded - attempting to load it")
+                                        os.system("sudo modprobe bcm2835-v4l2")
+                            except:
+                                print("⚠️ Could not check for bcm2835-v4l2 module")
             except Exception as e:
                 print(f"❌ Error detecting Raspberry Pi: {e}")
         
@@ -2504,9 +2619,19 @@ class ConversationRobot:
                 print("Attempting to initialize camera...")
                 self.emotion_cap = cv2.VideoCapture(0)
                 if not self.emotion_cap.isOpened():
-                    print("❌ Failed to open camera")
-                    return False
-                print("✅ Camera initialized successfully")
+                    print("❌ Failed to open camera at index 0")
+                    # Try alternative indices
+                    for i in range(1, 4):
+                        print(f"Trying camera device {i}...")
+                        self.emotion_cap = cv2.VideoCapture(i)
+                        if self.emotion_cap.isOpened():
+                            print(f"✅ Camera initialized successfully at index {i}")
+                            break
+                    else:
+                        print("❌ Failed to open camera at any index")
+                        return False
+                else:
+                    print("✅ Camera initialized successfully at index 0")
             except Exception as e:
                 print(f"❌ Error initializing camera: {e}")
                 return False
@@ -2574,6 +2699,147 @@ class ConversationRobot:
         except Exception as e:
             print(f"❌ Error testing camera: {e}")
             return False
+    
+    def test_raspberry_pi_camera(self):
+        """Test Raspberry Pi camera setup and provide diagnostic information"""
+        print("\n=== Testing Raspberry Pi Camera Setup ===")
+        
+        # Check if we're on a Raspberry Pi
+        is_raspberry_pi = False
+        is_pi5 = False
+        pi_model = "Unknown"
+        
+        if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
+            try:
+                with open('/sys/firmware/devicetree/base/model', 'r') as f:
+                    pi_model = f.read().strip(chr(0))
+                    if 'Raspberry Pi' in pi_model:
+                        is_raspberry_pi = True
+                        is_pi5 = '5' in pi_model
+                        print(f"✅ Detected: {pi_model}")
+            except Exception as e:
+                print(f"❌ Error reading device model: {e}")
+        
+        if not is_raspberry_pi:
+            print("ℹ️ Not running on a Raspberry Pi")
+            return False
+        
+        # Check for camera modules and drivers
+        print("\nChecking camera modules and drivers:")
+        
+        # Check for V4L2 devices
+        print("\nChecking for video devices:")
+        video_devices = glob.glob('/dev/video*')
+        if video_devices:
+            print(f"✅ Found {len(video_devices)} video devices: {', '.join(video_devices)}")
+        else:
+            print("❌ No video devices found in /dev/")
+        
+        # Check for libcamera on Pi 5
+        if is_pi5:
+            print("\nChecking libcamera setup (for Raspberry Pi 5):")
+            
+            # Check if libcamera-hello is available
+            try:
+                result = os.system("which libcamera-hello >/dev/null 2>&1")
+                if result == 0:
+                    print("✅ libcamera-hello is installed")
+                    
+                    # Try to run libcamera-hello with minimal output
+                    print("Running libcamera-hello to test camera...")
+                    test_result = os.system("libcamera-hello --timeout 1000 --preview 0 >/dev/null 2>&1")
+                    if test_result == 0:
+                        print("✅ libcamera-hello test successful")
+                    else:
+                        print(f"⚠️ libcamera-hello test returned error code {test_result}")
+                else:
+                    print("⚠️ libcamera-hello not found")
+            except Exception as e:
+                print(f"❌ Error testing libcamera: {e}")
+            
+            # Check if the camera is accessible through OpenCV
+            print("\nTesting camera access through OpenCV:")
+            try:
+                # Try multiple indices
+                for i in range(4):  # Try indices 0-3
+                    print(f"Trying camera at index {i}...")
+                    cap = cv2.VideoCapture(i)
+                    if cap.isOpened():
+                        print(f"✅ Successfully opened camera at index {i}")
+                        
+                        # Try to read a frame
+                        ret, frame = cap.read()
+                        if ret:
+                            print(f"✅ Successfully read frame with shape: {frame.shape}")
+                            
+                            # Save a test image
+                            test_image_path = "camera_test.jpg"
+                            cv2.imwrite(test_image_path, frame)
+                            print(f"✅ Saved test image to {test_image_path}")
+                        else:
+                            print("❌ Failed to read frame")
+                        
+                        # Release the camera
+                        cap.release()
+                        break
+                    else:
+                        print(f"❌ Failed to open camera at index {i}")
+                        cap.release()
+            except Exception as e:
+                print(f"❌ Error testing camera with OpenCV: {e}")
+        
+        # For older Pi models, check bcm2835-v4l2 module
+        else:
+            print("\nChecking bcm2835-v4l2 module (for older Raspberry Pi models):")
+            try:
+                # Check if module is loaded
+                with open('/proc/modules', 'r') as modules:
+                    module_content = modules.read()
+                    if 'bcm2835_v4l2' in module_content:
+                        print("✅ bcm2835-v4l2 module is loaded")
+                    else:
+                        print("⚠️ bcm2835-v4l2 module is not loaded")
+                        print("Attempting to load the module...")
+                        os.system("sudo modprobe bcm2835-v4l2")
+                        
+                        # Check again
+                        with open('/proc/modules', 'r') as modules:
+                            if 'bcm2835_v4l2' in modules.read():
+                                print("✅ Successfully loaded bcm2835-v4l2 module")
+                            else:
+                                print("❌ Failed to load bcm2835-v4l2 module")
+            except Exception as e:
+                print(f"❌ Error checking for bcm2835-v4l2 module: {e}")
+            
+            # Test camera access
+            print("\nTesting camera access:")
+            try:
+                cap = cv2.VideoCapture(0)
+                if cap.isOpened():
+                    print("✅ Successfully opened camera")
+                    
+                    # Try to read a frame
+                    ret, frame = cap.read()
+                    if ret:
+                        print(f"✅ Successfully read frame with shape: {frame.shape}")
+                        
+                        # Save a test image
+                        test_image_path = "camera_test.jpg"
+                        cv2.imwrite(test_image_path, frame)
+                        print(f"✅ Saved test image to {test_image_path}")
+                    else:
+                        print("❌ Failed to read frame")
+                    
+                    # Release the camera
+                    cap.release()
+                else:
+                    print("❌ Failed to open camera")
+                    cap.release()
+            except Exception as e:
+                print(f"❌ Error testing camera: {e}")
+        
+        print("\n=== Raspberry Pi Camera Test Complete ===")
+        return True
 
 
 def check_env_file():
@@ -2670,6 +2936,14 @@ if __name__ == "__main__":
         print("Please set up your .env file and try again.")
         exit(1)
     
+    # Check for command line arguments
+    import sys
+    test_camera_only = False
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ["--test-camera", "-tc"]:
+            test_camera_only = True
+            print("Running in camera test mode only")
+    
     # List available default wake words
     print(f"Available default wake words: {', '.join(DEFAULT_WAKE_WORDS)}")
     
@@ -2704,6 +2978,14 @@ if __name__ == "__main__":
             use_emotion_detection=use_emotion_detection,
             show_webcam=show_webcam
         )
+        
+        # If test camera mode is enabled, only run the camera test
+        if test_camera_only:
+            print("\n=== CAMERA TEST MODE ===")
+            print("Testing Raspberry Pi camera setup...")
+            robot.test_raspberry_pi_camera()
+            print("\nCamera test complete. Exiting.")
+            exit(0)
         
         # Test beep sounds before running
         if robot_temp._parse_env_bool("ENABLE_BEEP", True):
