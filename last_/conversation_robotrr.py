@@ -428,16 +428,24 @@ class ConversationRobot:
     def setup_emotion_detection(self):
         """Set up emotion detection with FER library"""
         try:
-            print("Setting up emotion detection...")
+            print("\n=== Setting up emotion detection ===")
             
             # Initialize FER detector with MTCNN for better accuracy
             try:
+                print("Initializing FER detector with MTCNN...")
                 self.emotion_detector = FER(mtcnn=True)
-                print("Using MTCNN for face detection")
+                print("✅ Using MTCNN for face detection")
             except Exception as e:
-                print(f"Error setting up MTCNN: {e}")
+                print(f"❌ Error setting up MTCNN: {e}")
                 print("Falling back to Haar Cascade for face detection")
-                self.emotion_detector = FER(mtcnn=False)
+                try:
+                    self.emotion_detector = FER(mtcnn=False)
+                    print("✅ Successfully initialized FER with Haar Cascade")
+                except Exception as e2:
+                    print(f"❌ Critical error initializing FER: {e2}")
+                    print("Emotion detection will not be available")
+                    self.use_emotion_detection = False
+                    return False
             
             # For Raspberry Pi, ensure the camera module is properly initialized
             if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
@@ -453,49 +461,94 @@ class ConversationRobot:
                             
                             if is_pi5:
                                 print("Raspberry Pi 5 detected - using libcamera framework")
-                                # For Pi 5, the camera should already be available through libcamera
-                                # Check if the device exists
-                                if os.path.exists('/dev/video0'):
-                                    print("Camera device found at /dev/video0")
-                                else:
-                                    print("Camera device not found at /dev/video0")
-                                    print("Trying to initialize libcamera...")
-                                    # Try to ensure the camera is initialized
-                                    try:
-                                        os.system("sudo modprobe -r bcm2835-v4l2 2>/dev/null")  # Remove old driver if loaded
+                                # For Pi 5, we need special handling
+                                
+                                # First, check if v4l2 devices are available
+                                video_devices = glob.glob('/dev/video*')
+                                if not video_devices:
+                                    print("❌ No video devices found, trying to create them...")
+                                    # For Pi 5, try to ensure v4l2 compatibility layer is loaded
+                                    os.system("sudo modprobe v4l2-compat >/dev/null 2>&1")
+                                    time.sleep(1)
+                                    # Check again
+                                    video_devices = glob.glob('/dev/video*')
+                                    if video_devices:
+                                        print(f"✅ Successfully created video devices: {', '.join(video_devices)}")
+                                    else:
+                                        print("❌ Failed to create video devices")
+                                        
+                                        # Try one more approach - run libcamera-hello to initialize the camera
+                                        print("Trying to initialize camera with libcamera-hello...")
+                                        os.system("libcamera-hello --timeout 1000 --preview 0 >/dev/null 2>&1")
                                         time.sleep(1)
-                                    except Exception as e:
-                                        print(f"Note: {e}")
+                                        
+                                        # Check again for video devices
+                                        video_devices = glob.glob('/dev/video*')
+                                        if video_devices:
+                                            print(f"✅ Successfully created video devices after libcamera-hello: {', '.join(video_devices)}")
+                                else:
+                                    print(f"✅ Video devices already available: {', '.join(video_devices)}")
                             else:
                                 # For older Pi models, load the V4L2 driver
                                 print("Older Raspberry Pi model detected - loading bcm2835-v4l2 driver")
                                 try:
                                     os.system("sudo modprobe bcm2835-v4l2")
                                     time.sleep(1)  # Give time for the module to load
-                                    print("Loaded bcm2835-v4l2 module for Raspberry Pi camera")
+                                    print("✅ Loaded bcm2835-v4l2 module for Raspberry Pi camera")
                                 except Exception as cam_e:
-                                    print(f"Could not load bcm2835-v4l2 module: {cam_e}")
+                                    print(f"❌ Could not load bcm2835-v4l2 module: {cam_e}")
                 except Exception as f_e:
-                    print(f"Error reading device model: {f_e}")
+                    print(f"❌ Error reading device model: {f_e}")
             
-            # Initialize webcam
+            # Initialize webcam with special handling for Raspberry Pi 5
             print("Attempting to open camera...")
-            self.emotion_cap = cv2.VideoCapture(0)
+            
+            # Check if we already have a camera open
+            if self.emotion_cap and self.emotion_cap.isOpened():
+                print("Camera is already open, releasing it first...")
+                self.emotion_cap.release()
+                time.sleep(0.5)
+            
+            # Try to detect if we're on a Raspberry Pi 5
+            is_pi5 = False
+            if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
+                try:
+                    with open('/sys/firmware/devicetree/base/model', 'r') as f:
+                        model = f.read()
+                        if 'Raspberry Pi' in model and '5' in model:
+                            is_pi5 = True
+                except:
+                    pass
+            
+            # Special handling for Raspberry Pi 5
+            if is_pi5:
+                print("Using special camera initialization for Raspberry Pi 5...")
+                
+                # Try with explicit V4L2 backend first
+                self.emotion_cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+                if not self.emotion_cap.isOpened():
+                    print("❌ Failed to open camera with V4L2 backend, trying default...")
+                    self.emotion_cap = cv2.VideoCapture(0)
+            else:
+                # Standard initialization for other platforms
+                self.emotion_cap = cv2.VideoCapture(0)
             
             # Check if camera opened successfully
             if not self.emotion_cap.isOpened():
-                print("Error: Cannot open webcam at index 0, trying alternative indices...")
+                print("❌ Cannot open webcam at index 0, trying alternative indices...")
                 # Try alternative device numbers
                 for i in range(1, 4):  # Try up to device 3
                     print(f"Trying camera device {i}...")
                     self.emotion_cap = cv2.VideoCapture(i)
                     if self.emotion_cap.isOpened():
-                        print(f"Successfully opened camera device {i}")
+                        print(f"✅ Successfully opened camera device {i}")
                         break
+            else:
+                print("✅ Successfully opened camera at index 0")
             
             # Final check if any camera was opened
             if not self.emotion_cap.isOpened():
-                print("Could not open any camera device")
+                print("❌ Could not open any camera device")
                 self.use_emotion_detection = False
                 return False
             
@@ -505,23 +558,71 @@ class ConversationRobot:
             # Test camera by reading a frame
             ret, test_frame = self.emotion_cap.read()
             if not ret or test_frame is None:
-                print("Warning: Could not read a test frame from camera")
-            else:
-                print(f"Successfully read test frame with shape: {test_frame.shape}")
-                # Test emotion detection on the frame
-                try:
-                    test_result = self.emotion_detector.detect_emotions(test_frame)
-                    if test_result:
-                        print(f"Emotion detection test successful! Detected {len(test_result)} faces.")
-                    else:
-                        print("Emotion detection test ran but no faces detected in test frame.")
-                except Exception as test_e:
-                    print(f"Warning: Emotion detection test failed: {test_e}")
+                print("❌ Could not read a test frame from camera")
+                print("Trying to reinitialize camera with different settings...")
+                
+                # Try to release and reinitialize with different settings
+                self.emotion_cap.release()
+                time.sleep(0.5)
+                
+                # For Raspberry Pi 5, try with different backend options
+                if is_pi5:
+                    print("Trying alternative camera initialization for Raspberry Pi 5...")
+                    
+                    # Try with GSTREAMER backend
+                    try:
+                        print("Trying with GSTREAMER backend...")
+                        self.emotion_cap = cv2.VideoCapture(0, cv2.CAP_GSTREAMER)
+                    except:
+                        print("GSTREAMER backend not available")
+                    
+                    if not self.emotion_cap.isOpened():
+                        # Try with specific gstreamer pipeline for Pi camera
+                        try:
+                            print("Trying with specific gstreamer pipeline...")
+                            gst_pipeline = "libcamerasrc ! video/x-raw, width=640, height=480 ! videoconvert ! appsink"
+                            self.emotion_cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                        except:
+                            print("Specific gstreamer pipeline failed")
+                else:
+                    # For non-Pi5, try with V4L2 backend
+                    self.emotion_cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+                
+                if not self.emotion_cap.isOpened():
+                    print("❌ Failed to open camera with alternative backends")
+                    self.use_emotion_detection = False
+                    return False
+                
+                # Try reading again
+                ret, test_frame = self.emotion_cap.read()
+                if not ret or test_frame is None:
+                    print("❌ Still could not read a test frame from camera")
+                    self.use_emotion_detection = False
+                    return False
             
-            print("Emotion detection setup successfully!")
+            print(f"✅ Successfully read test frame with shape: {test_frame.shape}")
+            
+            # Test emotion detection on the frame
+            try:
+                print("Testing emotion detection on frame...")
+                test_result = self.emotion_detector.detect_emotions(test_frame)
+                if test_result:
+                    print(f"✅ Emotion detection test successful! Detected {len(test_result)} faces.")
+                    # Show first face emotion
+                    emotions = test_result[0]["emotions"]
+                    dominant = max(emotions, key=emotions.get)
+                    print(f"   Dominant emotion: {dominant} ({emotions[dominant]:.2f})")
+                else:
+                    print("ℹ️ Emotion detection test ran but no faces detected in test frame.")
+                    print("This is normal if no face is visible to the camera.")
+            except Exception as test_e:
+                print(f"⚠️ Emotion detection test failed: {test_e}")
+                print("Will try again when face is detected during runtime.")
+            
+            print("✅ Emotion detection setup successfully!")
             return True
         except Exception as e:
-            print(f"Error setting up emotion detection: {e}")
+            print(f"❌ Error setting up emotion detection: {e}")
             self.use_emotion_detection = False
             return False
     
@@ -675,6 +776,8 @@ class ConversationRobot:
             print("Emotion detection is disabled in settings")
             return
         
+        print("\n=== Starting Emotion Detection Thread ===")
+        
         if not self.emotion_detector:
             print("Emotion detector not initialized, trying to set up again...")
             if not self.setup_emotion_detection():
@@ -686,6 +789,41 @@ class ConversationRobot:
             if not self.setup_emotion_detection():
                 print("Failed to initialize camera")
                 return
+        
+        # Test camera by reading a frame
+        ret, test_frame = self.emotion_cap.read()
+        if not ret or test_frame is None:
+            print("Warning: Could not read a test frame from camera before starting thread")
+            print("Trying to reinitialize camera...")
+            
+            # Try to release and reinitialize
+            if self.emotion_cap:
+                self.emotion_cap.release()
+            
+            # Try different camera indices
+            camera_opened = False
+            for i in range(4):  # Try indices 0-3
+                print(f"Trying to initialize camera at index {i}...")
+                self.emotion_cap = cv2.VideoCapture(i)
+                if self.emotion_cap.isOpened():
+                    print(f"Successfully opened camera at index {i}")
+                    
+                    # Test reading a frame
+                    ret, test_frame = self.emotion_cap.read()
+                    if ret and test_frame is not None:
+                        print(f"Successfully read test frame with shape: {test_frame.shape}")
+                        camera_opened = True
+                        break
+                    else:
+                        print(f"Could not read frame from camera at index {i}")
+                        self.emotion_cap.release()
+            
+            if not camera_opened:
+                print("Failed to open any camera. Emotion detection will not work.")
+                self.use_emotion_detection = False
+                return
+        else:
+            print(f"Successfully read test frame with shape: {test_frame.shape}")
         
         # Stop any existing thread first
         if self.emotion_thread and self.emotion_thread.is_alive():
@@ -705,6 +843,16 @@ class ConversationRobot:
         try:
             self.emotion_thread.start()
             print("Emotion detection thread started successfully")
+            
+            # Wait a moment and check if the thread is actually running
+            time.sleep(0.5)
+            if not self.emotion_thread.is_alive():
+                print("Warning: Emotion detection thread stopped immediately after starting")
+                self.emotion_running = False
+                self.use_emotion_detection = False
+                return
+                
+            print("Emotion detection is now active and running")
         except Exception as e:
             print(f"Failed to start emotion detection thread: {e}")
             self.emotion_running = False
@@ -1298,6 +1446,28 @@ class ConversationRobot:
         try:
             print(f"Sending request to Gemini AI...")
             
+            # Debug emotion data
+            if emotion_data:
+                print(f"Emotion data detected: {emotion_data['emotion']} (confidence: {emotion_data['score']:.2f})")
+            else:
+                print("No emotion data available for this request")
+                
+                # Try to get current emotion if we don't have it
+                if self.use_emotion_detection:
+                    print("Attempting to get current emotion...")
+                    # Check if emotion detection is running
+                    if not self.emotion_thread or not self.emotion_thread.is_alive():
+                        print("Emotion detection thread not running, restarting...")
+                        self.start_emotion_detection_thread()
+                        time.sleep(1)  # Give it a moment to start
+                    
+                    # Try to get current emotion again
+                    emotion_data = self.get_current_emotion()
+                    if emotion_data:
+                        print(f"Successfully retrieved emotion: {emotion_data['emotion']} (confidence: {emotion_data['score']:.2f})")
+                    else:
+                        print("Still no emotion data available")
+            
             # Create a specialized system prompt for interacting with autistic children
             system_prompt = """
             You are KindCompanion, a gentle and supportive AI assistant specially designed to interact with autistic children. You are patient, kind, and understanding.
@@ -1441,6 +1611,7 @@ class ConversationRobot:
                 if emotion_data and self.use_emotion_detection:
                     emotion_context = f"[EMOTION CONTEXT: The child appears to be {emotion_data['emotion']} (confidence: {emotion_data['score']:.2f})]"
                     message_parts.append(emotion_context)
+                    print(f"Including emotion context in fallback request: {emotion_data['emotion']}")
                 
                 # Add the user's message
                 message_parts.append(f"Child's message: {user_input}")
@@ -1892,7 +2063,7 @@ class ConversationRobot:
         if self.use_emotion_detection:
             print("Stopping emotion detection...")
             self.stop_emotion_detection()
-        
+            
         # Close audio resources
         if self.audio_stream:
             try:
@@ -2433,15 +2604,18 @@ class ConversationRobot:
             print("Checking and installing FER dependencies...")
             import subprocess
             
-            # Check for tensorflow-lite on Raspberry Pi
+            # Check for Raspberry Pi
             is_raspberry_pi = False
+            is_pi5 = False
             if platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model'):
                 try:
                     with open('/sys/firmware/devicetree/base/model', 'r') as f:
                         model = f.read()
                         if 'Raspberry Pi' in model:
                             is_raspberry_pi = True
-                            print(f"Detected {model.strip(chr(0))}")
+                            pi_model = model.strip(chr(0))
+                            is_pi5 = '5' in pi_model
+                            print(f"Detected {pi_model}")
                 except:
                     pass
             
@@ -2459,29 +2633,110 @@ class ConversationRobot:
                         print("Installing OpenCV...")
                         subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python"])
                     
-                    # Install MTCNN with specific version for better compatibility
-                    try:
-                        import mtcnn
-                        print(f"MTCNN version {mtcnn.__version__} already installed")
-                    except (ImportError, AttributeError):
-                        print("Installing MTCNN...")
-                        subprocess.check_call([sys.executable, "-m", "pip", "install", "mtcnn==0.1.0"])
+                    # For Raspberry Pi 5, use different packages
+                    if is_pi5:
+                        print("Installing packages optimized for Raspberry Pi 5...")
+                        
+                        # Check if libcamera is available
+                        print("Checking libcamera setup...")
+                        result = os.system("which libcamera-hello >/dev/null 2>&1")
+                        if result == 0:
+                            print("✅ libcamera-hello is available")
+                            # Run libcamera-hello with minimal output to initialize the camera
+                            os.system("libcamera-hello --timeout 1000 --preview 0 >/dev/null 2>&1")
+                        else:
+                            print("⚠️ libcamera-hello not found, camera functionality may be limited")
+                        
+                        # Check if v4l2 devices are available
+                        video_devices = glob.glob('/dev/video*')
+                        if video_devices:
+                            print(f"✅ Found {len(video_devices)} video devices: {', '.join(video_devices)}")
+                        else:
+                            print("❌ No video devices found in /dev/")
+                            print("Attempting to initialize camera devices...")
+                            # For Pi 5, try to ensure v4l2 compatibility layer is loaded
+                            os.system("sudo modprobe v4l2-compat >/dev/null 2>&1")
+                            time.sleep(1)
+                            # Check again
+                            video_devices = glob.glob('/dev/video*')
+                            if video_devices:
+                                print(f"✅ Successfully created video devices: {', '.join(video_devices)}")
+                        
+                        # Install MTCNN with a version that works on Pi 5
+                        try:
+                            import mtcnn
+                            print(f"MTCNN version {mtcnn.__version__} already installed")
+                        except (ImportError, AttributeError):
+                            print("Installing MTCNN...")
+                            # Try with newer version for Pi 5
+                            try:
+                                subprocess.check_call([sys.executable, "-m", "pip", "install", "mtcnn"])
+                            except:
+                                # Fall back to specific version if needed
+                                subprocess.check_call([sys.executable, "-m", "pip", "install", "mtcnn==0.1.0"])
+                        
+                        # Install TensorFlow for Pi 5
+                        try:
+                            import tensorflow as tf
+                            print(f"TensorFlow version {tf.__version__} already installed")
+                        except ImportError:
+                            print("Installing TensorFlow for Raspberry Pi 5...")
+                            # Try with newer version for Pi 5
+                            subprocess.check_call([sys.executable, "-m", "pip", "install", "tensorflow"])
+                    else:
+                        # For older Pi models, use more specific versions
+                        # Install MTCNN with specific version for better compatibility
+                        try:
+                            import mtcnn
+                            print(f"MTCNN version {mtcnn.__version__} already installed")
+                        except (ImportError, AttributeError):
+                            print("Installing MTCNN...")
+                            subprocess.check_call([sys.executable, "-m", "pip", "install", "mtcnn==0.1.0"])
+                        
+                        # Install TensorFlow
+                        try:
+                            import tensorflow as tf
+                            print(f"TensorFlow version {tf.__version__} already installed")
+                        except ImportError:
+                            print("Installing TensorFlow...")
+                            # Use a compatible version for older Pi models
+                            subprocess.check_call([sys.executable, "-m", "pip", "install", "tensorflow==2.9.0"])
                     
-                    # Install TensorFlow
+                    # Make sure FER is installed
                     try:
-                        import tensorflow as tf
-                        print(f"TensorFlow version {tf.__version__} already installed")
+                        from fer import FER
+                        print("FER library is already installed")
                     except ImportError:
-                        print("Installing TensorFlow...")
-                        subprocess.check_call([sys.executable, "-m", "pip", "install", "tensorflow"])
+                        print("Installing FER...")
+                        subprocess.check_call([sys.executable, "-m", "pip", "install", "fer"])
                     
                     print("All dependencies for FER installed successfully on Raspberry Pi")
+                    return True
                     
                 except Exception as e:
                     print(f"Error installing dependencies: {e}")
                     return False
             
-            return True
+            # For non-Raspberry Pi systems
+            else:
+                # Ensure FER is installed
+                try:
+                    from fer import FER
+                    print("FER library is already installed")
+                except ImportError:
+                    print("Installing FER...")
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "fer"])
+            
+            # Final verification
+            try:
+                from fer import FER
+                detector = FER(mtcnn=False)  # Try without MTCNN first as a basic test
+                print("FER library verified and working")
+                return True
+            except Exception as e:
+                print(f"Error verifying FER installation: {e}")
+                return False
+                
         except Exception as e:
             print(f"Error ensuring FER dependencies: {e}")
             return False
@@ -2939,10 +3194,20 @@ if __name__ == "__main__":
     # Check for command line arguments
     import sys
     test_camera_only = False
+    test_emotion_only = False
+    show_webcam = False
+    
     if len(sys.argv) > 1:
         if sys.argv[1] in ["--test-camera", "-tc"]:
             test_camera_only = True
             print("Running in camera test mode only")
+        elif sys.argv[1] in ["--test-emotion", "-te"]:
+            test_emotion_only = True
+            print("Running in emotion detection test mode only")
+            # Check for additional show-webcam flag
+            if len(sys.argv) > 2 and sys.argv[2] in ["--show-webcam", "-sw"]:
+                show_webcam = True
+                print("Webcam window will be shown during test")
     
     # List available default wake words
     print(f"Available default wake words: {', '.join(DEFAULT_WAKE_WORDS)}")
@@ -2956,7 +3221,10 @@ if __name__ == "__main__":
     voice_rate = robot_temp._parse_env_int("VOICE_RATE", 200)
     voice_volume = robot_temp._parse_env_float("VOICE_VOLUME", 1.0)
     use_emotion_detection = robot_temp._parse_env_bool("USE_EMOTION_DETECTION", True)
-    show_webcam = robot_temp._parse_env_bool("SHOW_WEBCAM", False)
+    
+    # Override show_webcam if specified in command line
+    if not show_webcam:
+        show_webcam = robot_temp._parse_env_bool("SHOW_WEBCAM", False)
     
     # Check for list voices flag
     if robot_temp._parse_env_bool("LIST_VOICES", False):
@@ -2986,8 +3254,63 @@ if __name__ == "__main__":
             robot.test_raspberry_pi_camera()
             print("\nCamera test complete. Exiting.")
             exit(0)
+            
+        # If test emotion mode is enabled, only run the emotion detection test
+        if test_emotion_only:
+            print("\n=== EMOTION DETECTION TEST MODE ===")
+            
+            # First run the test_emotion_detection method
+            if robot.test_emotion_detection():
+                print("\nEmotion detection test passed. Starting emotion detection thread...")
+                
+                # Start the emotion detection thread
+                robot.start_emotion_detection_thread()
+                
+                # Run a continuous test loop
+                print("\nRunning continuous emotion detection test...")
+                print("Press Ctrl+C to exit")
+                
+                try:
+                    # Show webcam window if requested
+                    if show_webcam:
+                        print("Showing webcam window. Position yourself in front of the camera.")
+                        
+                    # Run for 60 seconds or until interrupted
+                    start_time = time.time()
+                    while time.time() - start_time < 60:
+                        # Get current emotion
+                        emotion_data = robot.get_current_emotion()
+                        
+                        if emotion_data:
+                            emotion = emotion_data["emotion"]
+                            score = emotion_data["score"]
+                            print(f"Detected emotion: {emotion} (confidence: {score:.2f})")
+                            
+                            # Show all emotions with scores
+                            all_emotions = emotion_data["all_emotions"]
+                            emotions_str = ", ".join([f"{e}: {s:.2f}" for e, s in all_emotions.items()])
+                            print(f"All emotions: {emotions_str}")
+                            
+                            # This is what would be sent to the AI
+                            print(f"AI would receive: [EMOTION CONTEXT: The child appears to be {emotion} (confidence: {score:.2f})]")
+                        else:
+                            print("No emotion detected yet...")
+                        
+                        # Wait a bit before checking again
+                        time.sleep(2)
+                        
+                except KeyboardInterrupt:
+                    print("\nEmotion detection test interrupted by user.")
+                
+                # Clean up
+                robot.stop_emotion_detection()
+                print("\nEmotion detection test complete. Exiting.")
+                exit(0)
+            else:
+                print("\nEmotion detection test failed. Please check your camera setup.")
+                exit(1)
         
-        # Test beep sounds before running
+        # Test beep sounds at startup to ensure they're working
         if robot_temp._parse_env_bool("ENABLE_BEEP", True):
             print("Testing beep functionality before starting...")
             robot.test_beep_sounds()
