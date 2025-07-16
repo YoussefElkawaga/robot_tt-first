@@ -41,7 +41,7 @@ DEFAULT_ARDUINO_PORT = "COM3" if platform.system() == "Windows" else "/dev/ttyAC
 # This ensures the script works even if the .env file has issues
 os.environ["PORCUPINE_ACCESS_KEY"] = "qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag=="
 os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
-os.environ["ELEVENLABS_API_KEY"] = "sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61"
+os.environ["ELEVENLABS_API_KEY"] = "sk_66dccabc23a81c5c5fc8ca593063faab9040dfea9cdb59a0"
 os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
 os.environ["WAKE_WORD"] = "alexa"
 os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
@@ -1449,6 +1449,14 @@ class ConversationRobot:
                             if "text" in result:
                                 text = result["text"].strip()
                                 print(f"You said (Lemonfox): {text}")
+                                
+                                # Process robot commands immediately when detected in speech
+                                user_input_lower = text.lower()
+                                if any(keyword in user_input_lower for keyword in ["shake", "hand", "dance", "happy", "wave", "hello", "move"]):
+                                    print("Detected potential robot command in speech, processing immediately")
+                                    # Use an empty AI response since we're just checking user input
+                                    self.process_robot_commands(text, "")
+                                
                                 return text
                             else:
                                 print(f"Unexpected response format from Lemonfox API: {result}")
@@ -1456,6 +1464,14 @@ class ConversationRobot:
                                 try:
                                     text = self.recognizer.recognize_google(audio)
                                     print(f"Falling back to Google: {text}")
+                                    
+                                    # Process robot commands immediately when detected in speech
+                                    user_input_lower = text.lower()
+                                    if any(keyword in user_input_lower for keyword in ["shake", "hand", "dance", "happy", "wave", "hello", "move"]):
+                                        print("Detected potential robot command in speech, processing immediately")
+                                        # Use an empty AI response since we're just checking user input
+                                        self.process_robot_commands(text, "")
+                                    
                                     return text
                                 except:
                                     return None
@@ -1467,6 +1483,14 @@ class ConversationRobot:
                             try:
                                 text = self.recognizer.recognize_google(audio)
                                 print(f"Falling back to Google: {text}")
+                                
+                                # Process robot commands immediately when detected in speech
+                                user_input_lower = text.lower()
+                                if any(keyword in user_input_lower for keyword in ["shake", "hand", "dance", "happy", "wave", "hello", "move"]):
+                                    print("Detected potential robot command in speech, processing immediately")
+                                    # Use an empty AI response since we're just checking user input
+                                    self.process_robot_commands(text, "")
+                                
                                 return text
                             except:
                                 return None
@@ -1480,11 +1504,19 @@ class ConversationRobot:
                         except:
                             return None
                 
-                # Fallback to Google if Lemonfox is not selected
+                                    # Fallback to Google if Lemonfox is not selected
                 else:
                     try:
                         text = self.recognizer.recognize_google(audio)
                         print(f"You said (Google): {text}")
+                        
+                        # Process robot commands immediately when detected in speech
+                        user_input_lower = text.lower()
+                        if any(keyword in user_input_lower for keyword in ["shake", "hand", "dance", "happy", "wave", "hello", "move"]):
+                            print("Detected potential robot command in speech, processing immediately")
+                            # Use an empty AI response since we're just checking user input
+                            self.process_robot_commands(text, "")
+                        
                         return text
                     except Exception as e:
                         print(f"Google speech recognition error: {e}")
@@ -1740,18 +1772,33 @@ class ConversationRobot:
             "stop moving": "idle",
             "talk to me": "talk",
             "say something": "talk",
-            "move your hand": "talk"
+            "move your hand": "talk",
+            # Add more direct command matches
+            "hand": "shake_hand",
+            "shake": "shake_hand",
+            "shaking": "shake_hand",
+            "dancing": "happy",
+            "move": "talk",
+            "wave your hand": "talk",
+            "waving": "talk",
+            "hello": "talk"
         }
         
         # Check user input for movement commands - with more robust detection
         user_input_lower = user_input.lower()
         
-        # Direct command detection
+        # Direct command detection - IMMEDIATE ACTION on user input
+        command_detected = False
         for keyword, command in movement_keywords.items():
             if keyword in user_input_lower:
                 print(f"Detected movement command '{command}' from user input: '{keyword}'")
                 self.send_message_to_arduino(command + '\n')  # Add newline for Arduino Serial.readStringUntil('\n')
-                return
+                command_detected = True
+                break  # Stop after first match to avoid multiple commands
+        
+        # If we already detected and sent a command, return
+        if command_detected:
+            return
         
         # Special handling for common phrases that might not be caught above
         if "hand" in user_input_lower and ("shake" in user_input_lower or "shaking" in user_input_lower):
@@ -1762,6 +1809,11 @@ class ConversationRobot:
         if "dance" in user_input_lower:
             print("Detected dance command from context")
             self.send_message_to_arduino("happy\n")
+            return
+            
+        if "wave" in user_input_lower or "waving" in user_input_lower or "hello" in user_input_lower:
+            print("Detected waving command from context")
+            self.send_message_to_arduino("talk\n")
             return
         
         # Also check AI response for movement indications
@@ -1786,8 +1838,9 @@ class ConversationRobot:
             print("AI response indicates happiness - sending 'happy' command")
             self.send_message_to_arduino("happy\n")
         
+        # ALWAYS send talk command for responses that will be spoken
         # Calculate talk duration based on response length when speaking
-        elif response_length > 20:  # Only for non-trivial responses
+        else:
             # Calculate talk duration based on response length and estimated speaking time
             # Average reading speed is about 150 words per minute or 2.5 words per second
             # Average word length is about 5 characters
@@ -1797,15 +1850,17 @@ class ConversationRobot:
             estimated_seconds = response_length / 10  # Estimate seconds of speech
             talk_duration = int(estimated_seconds * 1000)  # Convert to milliseconds
             
+            # Ensure minimum duration for better animation
+            talk_duration = max(talk_duration, 2000)  # At least 2 seconds
+            
             # Cap maximum duration to avoid very long animations
             talk_duration = min(talk_duration, 15000)  # Max 15 seconds
             
             print(f"Calculated talk duration: {talk_duration}ms for {response_length} characters")
             
-            # Only send talk command for longer responses that will be spoken
-            if talk_duration > 1000:  # Only for responses longer than 1 second
-                print(f"Sending talk command with duration: talk:{talk_duration}")
-                self.send_message_to_arduino(f"talk:{talk_duration}\n")
+            # Always send talk command when speaking
+            print(f"Sending talk command with duration: talk:{talk_duration}")
+            self.send_message_to_arduino(f"talk:{talk_duration}\n")
         
         # Note: We don't send "idle" based on AI response as that's more of a direct command
     
@@ -1974,6 +2029,17 @@ class ConversationRobot:
             self.is_speaking = True
             self.stop_speaking = False
             
+            # Send talk command to Arduino to animate while speaking
+            # Calculate talk duration based on text length
+            text_length = len(text)
+            estimated_seconds = text_length / 10  # Estimate seconds of speech
+            talk_duration = int(estimated_seconds * 1000)  # Convert to milliseconds
+            talk_duration = max(talk_duration, 2000)  # At least 2 seconds
+            talk_duration = min(talk_duration, 15000)  # Max 15 seconds
+            
+            print(f"Sending talk command to Arduino for speech animation (duration: {talk_duration}ms)")
+            self.send_message_to_arduino(f"talk:{talk_duration}\n")
+            
             # Visual feedback that we're speaking (only if show_webcam is True)
             if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
                 _, frame = self.emotion_cap.read()
@@ -2067,6 +2133,14 @@ class ConversationRobot:
                 
                 if new_question:
                     print(f"NEW QUESTION RECEIVED: {new_question}")
+                    
+                    # Process robot commands immediately when detected in speech
+                    user_input_lower = new_question.lower()
+                    if any(keyword in user_input_lower for keyword in ["shake", "hand", "dance", "happy", "wave", "hello", "move"]):
+                        print("Detected potential robot command in speech, processing immediately")
+                        # Use an empty AI response since we're just checking user input
+                        self.process_robot_commands(new_question, "")
+                    
                     # Process the new question immediately with high priority
                     emotion_data = self.get_current_emotion()
                     print("PROCESSING YOUR QUESTION...")
@@ -2467,6 +2541,17 @@ class ConversationRobot:
                         if processing_thread:
                             setattr(show_processing, "stop", True)
                             processing_thread.join(timeout=0.5)
+                            
+                        # Make sure the robot is always animating when speaking
+                        # Send an additional talk command with appropriate duration
+                        if ai_response:
+                            text_length = len(ai_response)
+                            estimated_seconds = text_length / 10  # Estimate seconds of speech
+                            talk_duration = int(estimated_seconds * 1000)  # Convert to milliseconds
+                            talk_duration = max(talk_duration, 2000)  # At least 2 seconds
+                            talk_duration = min(talk_duration, 15000)  # Max 15 seconds
+                            print(f"Sending additional talk command to ensure animation (duration: {talk_duration}ms)")
+                            self.send_message_to_arduino(f"talk:{talk_duration}\n")
                         
                         # Save to conversation history with emotion data
                         if self.save_history:
@@ -3943,7 +4028,7 @@ def check_env_file():
         # Set essential environment variables
         os.environ["PORCUPINE_ACCESS_KEY"] = "qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag=="
         os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
-        os.environ["ELEVENLABS_API_KEY"] = "sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61"
+        os.environ["ELEVENLABS_API_KEY"] = "sk_66dccabc23a81c5c5fc8ca593063faab9040dfea9cdb59a0"
         os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
         os.environ["WAKE_WORD"] = "alexa"
         os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
@@ -3972,7 +4057,7 @@ def check_env_file():
                 f.write("""# API Keys
 PORCUPINE_ACCESS_KEY=qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag==
 GEMINI_API_KEY=AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8
-ELEVENLABS_API_KEY=sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61
+ELEVENLABS_API_KEY=sk_66dccabc23a81c5c5fc8ca593063faab9040dfea9cdb59a0
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 
 # Wake word settings
