@@ -1768,9 +1768,14 @@ class ConversationRobot:
         # This is a fallback in case the user's command wasn't directly detected
         ai_response_lower = ai_response.lower()
         
+        # Estimate talk duration based on response length - longer responses need longer talk animations
+        response_length = len(ai_response)
+        talk_duration = 0
+        
         # Check for phrases that might indicate the robot should perform an action
         if "i'll wave" in ai_response_lower or "i'm waving" in ai_response_lower or "waving at you" in ai_response_lower:
             print("AI response indicates waving - sending 'talk' command")
+            # For short waving animations, use regular talk command
             self.send_message_to_arduino("talk\n")
         
         elif "shake hands" in ai_response_lower or "shake your hand" in ai_response_lower or "high five" in ai_response_lower or "handshake" in ai_response_lower:
@@ -1780,6 +1785,27 @@ class ConversationRobot:
         elif "i'm happy" in ai_response_lower or "i'll dance" in ai_response_lower or "dancing" in ai_response_lower or "dance for you" in ai_response_lower:
             print("AI response indicates happiness - sending 'happy' command")
             self.send_message_to_arduino("happy\n")
+        
+        # Calculate talk duration based on response length when speaking
+        elif response_length > 20:  # Only for non-trivial responses
+            # Calculate talk duration based on response length and estimated speaking time
+            # Average reading speed is about 150 words per minute or 2.5 words per second
+            # Average word length is about 5 characters
+            # So approximately 12.5 characters per second
+            # We'll use 10 chars/second for a more natural pace
+            
+            estimated_seconds = response_length / 10  # Estimate seconds of speech
+            talk_duration = int(estimated_seconds * 1000)  # Convert to milliseconds
+            
+            # Cap maximum duration to avoid very long animations
+            talk_duration = min(talk_duration, 15000)  # Max 15 seconds
+            
+            print(f"Calculated talk duration: {talk_duration}ms for {response_length} characters")
+            
+            # Only send talk command for longer responses that will be spoken
+            if talk_duration > 1000:  # Only for responses longer than 1 second
+                print(f"Sending talk command with duration: talk:{talk_duration}")
+                self.send_message_to_arduino(f"talk:{talk_duration}\n")
         
         # Note: We don't send "idle" based on AI response as that's more of a direct command
     
@@ -3291,7 +3317,7 @@ class ConversationRobot:
         
         print("\n=== Raspberry Pi Camera Test Complete ===")
         return True
-    
+
     def setup_arduino_connection(self):
         """Set up the Arduino connection with improved detection for Raspberry Pi"""
         try:
