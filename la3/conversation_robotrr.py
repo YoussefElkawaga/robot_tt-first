@@ -17,42 +17,11 @@ import sys
 import platform
 import glob
 from collections import deque
-import requests
-import io
-import tempfile
-
-# Import ElevenLabs client
-try:
-    from elevenlabs.client import ElevenLabs
-    ELEVENLABS_CLIENT_AVAILABLE = True
-except ImportError:
-    print("ElevenLabs client library not found. Installing...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "elevenlabs"])
-    from elevenlabs.client import ElevenLabs
-    ELEVENLABS_CLIENT_AVAILABLE = True
-    print("ElevenLabs client library installed successfully.")
-
-# Import pydub for audio playback
-try:
-    from pydub import AudioSegment
-    from pydub.playback import play
-    PYDUB_AVAILABLE = True
-except ImportError:
-    print("pydub not found. Installing...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub"])
-    from pydub import AudioSegment
-    from pydub.playback import play
-    PYDUB_AVAILABLE = True
-    print("pydub installed successfully.")
 
 # Set environment variables directly in code
 # This ensures the script works even if the .env file has issues
 os.environ["PORCUPINE_ACCESS_KEY"] = "qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag=="
 os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
-os.environ["ELEVENLABS_API_KEY"] = "sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61"
-os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
 os.environ["WAKE_WORD"] = "alexa"
 os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
 os.environ["SAVE_HISTORY"] = "true"
@@ -179,35 +148,14 @@ class ConversationRobot:
         # Initialize speech recognition
         self.recognizer = sr.Recognizer()
         
-        # Initialize pyttsx3 as fallback TTS
-        try:
-            self.tts_engine = pyttsx3.init()
-            self.setup_voice(voice_id, rate, volume)
-            self.has_fallback_tts = True
-        except Exception as e:
-            print(f"Warning: Could not initialize fallback TTS system: {e}")
-            self.tts_engine = None
-            self.has_fallback_tts = False
-            
-        # Initialize ElevenLabs TTS
-        self.elevenlabs_api_key = self._parse_env_str("ELEVENLABS_API_KEY", "")
-        if not self.elevenlabs_api_key and "ELEVENLABS_API_KEY" in os.environ:
-            self.elevenlabs_api_key = os.environ["ELEVENLABS_API_KEY"]
-        if not self.elevenlabs_api_key:
-            self.elevenlabs_api_key = "sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61"
-            print("Using hardcoded ElevenLabs API key")
-            
-        self.elevenlabs_voice_id = self._parse_env_str("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-        self.elevenlabs_model_id = self._parse_env_str("ELEVENLABS_MODEL_ID", "eleven_monolingual_v1")
-        self.elevenlabs_voices = []
-        self.use_elevenlabs = True
-        self.elevenlabs_failed = False
+        # Initialize text-to-speech with pyttsx3
+        self.tts_engine = pyttsx3.init()
+        self.setup_voice(voice_id, rate, volume)
         
         # Add flag to control speech interruption
         self.is_speaking = False
         self.stop_speaking = False
         self.interrupt_thread = None
-        self.audio_player = None
         
         # Initialize Gemini AI
         self.gemini_api_key = self._parse_env_str("GEMINI_API_KEY", "")
@@ -1274,7 +1222,7 @@ class ConversationRobot:
         except Exception as e:
             print(f"Error setting up interrupt detection: {e}")
     
-    def speak(self, text, voice_id=None):
+    def speak(self, text):
         """Convert text to speech with improved natural delivery and IMMEDIATE interrupt capability"""
         if not text:
             return
@@ -1295,10 +1243,10 @@ class ConversationRobot:
                 _, frame = self.emotion_cap.read()
                 if frame is not None:
                     # Add a clear visual indicator that interruption is available
-                    cv2.rectangle(frame,
-                                 (0, frame.shape[0] - 40),
-                                 (frame.shape[1], frame.shape[0]),
-                                 (0, 100, 0),
+                    cv2.rectangle(frame, 
+                                 (0, frame.shape[0] - 40), 
+                                 (frame.shape[1], frame.shape[0]), 
+                                 (0, 100, 0), 
                                  -1)
                     
                     cv2.putText(
@@ -1316,27 +1264,126 @@ class ConversationRobot:
             # Start interrupt detection in a separate thread with high priority
             self.interrupt_thread = threading.Thread(target=self.check_wake_word_during_speech)
             self.interrupt_thread.daemon = True
+            # Set thread to highest priority
             self.interrupt_thread.start()
             
-            # Generate speech for the entire text at once
-            print("Generating speech for the entire response at once...")
-            audio_data = self.elevenlabs_tts(processed_text, voice_id)
-            
-            # Play the entire audio with interrupt capability
-            if audio_data:
-                success = self.play_audio(audio_data)
+            # Register callback for immediate stop if available
+            try:
+                def onWord(name, location, length):
+                    if self.stop_speaking:
+                        self.tts_engine.stop()
                 
-                # Wait for audio to finish or be interrupted
-                if success and self.audio_player and self.audio_player.is_alive():
-                    while self.audio_player.is_alive() and not self.stop_speaking:
-                        time.sleep(0.1)
-            else:
-                print("No audio data returned - continuing with silent operation")
+                self.tts_engine.connect('started-word', onWord)
+            except:
+                pass
             
-            # Check if speech was interrupted by wake word - IMMEDIATE RESPONSE
+            # Try to add event handler for word callbacks
+            try:
+                # Add event handler for word callbacks
+                def onWord(name, location, length):
+                    # Check if we need to stop speaking
+                    if self.stop_speaking:
+                        self.tts_engine.stop()
+                
+                # Register the callback
+                self.tts_engine.connect('started-word', onWord)
+            except Exception as e:
+                print(f"Warning: Could not set up speech interrupt callback: {e}")
+                print("Interrupt detection will still work but may have a slight delay")
+            
+            # Set up a direct callback for immediate interruption
+            try:
+                # Configure TTS engine for immediate interruption
+                self.tts_engine.setProperty('interrupt_check', 
+                                          lambda: self.stop_speaking)
+            except:
+                pass
+                
+            # Break long responses into smaller chunks for more frequent interrupt checks
+            if len(processed_text) > 100:  # Smaller threshold for more interrupt points
+                # Find natural break points (sentences)
+                sentences = re.split(r'(?<=[.!?])\s+', processed_text)
+                chunks = []
+                current_chunk = ""
+                
+                # Group sentences into SMALLER chunks for more frequent interrupt opportunities
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) < 100:  # Smaller chunks
+                        current_chunk += sentence + " "
+                    else:
+                        chunks.append(current_chunk.strip())
+                        current_chunk = sentence + " "
+                
+                # Add the last chunk if not empty
+                if current_chunk.strip():
+                    chunks.append(current_chunk.strip())
+                
+                # Speak each chunk with frequent interrupt checks
+                for i, chunk in enumerate(chunks):
+                    # Check if we should stop speaking BEFORE speaking this chunk
+                    if self.stop_speaking:
+                        print("Speech interrupted - stopping immediately")
+                        break
+                        
+                    # Update visual feedback with progress (only if show_webcam is True)
+                    if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
+                        _, frame = self.emotion_cap.read()
+                        if frame is not None:
+                            # Clear previous text with green background
+                            cv2.rectangle(frame, 
+                                        (0, frame.shape[0] - 40), 
+                                        (frame.shape[1], frame.shape[0]), 
+                                        (0, 100, 0), 
+                                        -1)
+                                        
+                            progress = f"Speaking... ({i+1}/{len(chunks)}) - Say '{self.wake_word}' to interrupt"
+                            cv2.putText(
+                                frame,
+                                progress,
+                                (10, frame.shape[0] - 20),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7,
+                                (255, 255, 255),  # White text on green background
+                                2,
+                            )
+                            cv2.imshow("Emotion Detection", frame)
+                            cv2.waitKey(1)
+                    
+                    # Speak this chunk with interrupt check
+                    self.tts_engine.say(chunk)
+                    self.tts_engine.runAndWait()
+                    
+                    # Check if we should stop speaking AFTER speaking this chunk
+                    if self.stop_speaking:
+                        print("Speech interrupted between chunks - stopping immediately")
+                        break
+                    
+                    # Very brief pause between chunks for interrupt opportunity
+                    if i < len(chunks) - 1:
+                        # Check for interrupts during pause
+                        for _ in range(3):  # Check 3 times during pause
+                            if self.stop_speaking:
+                                print("Speech interrupted during pause - stopping immediately")
+                                break
+                            time.sleep(0.1)  # Very short pause with frequent checks
+            else:
+                # For shorter responses, speak with interrupt check
+                self.tts_engine.say(processed_text)
+                self.tts_engine.runAndWait()
+            
+                                # Check if speech was interrupted by wake word - IMMEDIATE RESPONSE
             if self.stop_speaking:
                 print(f"\n!!! SPEECH INTERRUPTED - IMMEDIATE RESPONSE !!!")
                 print("LISTENING FOR YOUR QUESTION NOW...")
+                
+                # Force stop any remaining speech instantly
+                try:
+                    self.tts_engine.stop()
+                except:
+                    pass
+                
+                # Skip the "Ready" prompt to start listening IMMEDIATELY
+                # This removes the delay between interrupt and listening
                 
                 # IMMEDIATELY listen for a new question without any delay
                 print("ACTIVELY LISTENING - SPEAK NOW")
@@ -1346,10 +1393,10 @@ class ConversationRobot:
                     _, frame = self.emotion_cap.read()
                     if frame is not None:
                         # Clear with bright red to indicate immediate listening
-                        cv2.rectangle(frame,
-                                    (0, 0),
-                                    (frame.shape[1], frame.shape[0]),
-                                    (0, 0, 200),
+                        cv2.rectangle(frame, 
+                                    (0, 0), 
+                                    (frame.shape[1], frame.shape[0]), 
+                                    (0, 0, 200), 
                                     -1)
                         
                         cv2.putText(
@@ -1549,14 +1596,6 @@ class ConversationRobot:
         if not self.setup_wake_word_detection():
             print("Failed to set up wake word detection. Exiting.")
             return
-            
-        # Verify ElevenLabs API key
-        print("\nVerifying ElevenLabs API access...")
-        api_works = self.verify_elevenlabs_api()
-        if api_works:
-            print("✅ ElevenLabs API is working correctly")
-        else:
-            print("⚠️ ElevenLabs API verification failed - will use fallback TTS system")
         
         # Start emotion detection if enabled
         if self.use_emotion_detection:
@@ -1741,351 +1780,6 @@ class ConversationRobot:
                     self.emotion_cap.release()
             
             self.cleanup()
-    
-    def verify_elevenlabs_api(self):
-        """Verify that the ElevenLabs API key is valid and has the right permissions"""
-        try:
-            print("Verifying ElevenLabs API key...")
-            
-            # Try to access a simple endpoint that requires minimal permissions
-            import requests
-            headers = {
-                "xi-api-key": self.elevenlabs_api_key
-            }
-            
-            # Test with the models endpoint which typically requires minimal permissions
-            url = "https://api.elevenlabs.io/v1/models"
-            
-            response = requests.get(url, headers=headers)
-            
-            if response.status_code == 200:
-                print("ElevenLabs API key verified successfully")
-                # Reset the failed flag since the key is working
-                self.elevenlabs_failed = False
-                return True
-            else:
-                print(f"ElevenLabs API verification failed: Status {response.status_code}")
-                print(f"Response: {response.text}")
-                
-                # If unauthorized, mark the API as failed
-                if response.status_code == 401:
-                    self.elevenlabs_failed = True
-                    print("ElevenLabs API key is invalid or expired")
-                
-                return False
-                
-        except Exception as e:
-            print(f"Error verifying ElevenLabs API: {e}")
-            return False
-            
-    def elevenlabs_tts(self, text, voice_id=None):
-        """Generate speech using ElevenLabs TTS API with fallback option"""
-        # If ElevenLabs previously failed with auth error, use fallback immediately
-        if self.elevenlabs_failed:
-            return self.fallback_tts(text)
-        
-        # Use default voice ID if none provided
-        voice_id = voice_id or self.elevenlabs_voice_id
-        
-        if not voice_id:
-            print("ElevenLabs voice ID not set. Cannot generate speech.")
-            return self.fallback_tts(text)
-            
-        try:
-            print(f"Generating speech with ElevenLabs client for text: {text[:50]}...")
-            
-            # Make a direct HTTP request using the documented authentication method
-            try:
-                import requests
-                headers = {
-                    "xi-api-key": self.elevenlabs_api_key,
-                    "Content-Type": "application/json",
-                    "Accept": "audio/mpeg"  # Explicitly request MP3 format
-                }
-                
-                url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-                
-                data = {
-                    "text": text,
-                    "model_id": self.elevenlabs_model_id,
-                    "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.5
-                    }
-                }
-                
-                print("Making direct API request to ElevenLabs")
-                response = requests.post(url, json=data, headers=headers)
-                
-                if response.status_code == 200:
-                    print("Successfully received audio from ElevenLabs API")
-                    audio_content = response.content
-                    
-                    # Verify we actually got audio data (should be binary/bytes)
-                    if len(audio_content) > 1000:  # Audio files should be at least 1KB
-                        print(f"Received {len(audio_content)} bytes of audio data")
-                        return audio_content
-                    else:
-                        print(f"Warning: Received suspiciously small audio ({len(audio_content)} bytes)")
-                        # Continue to try other methods
-                else:
-                    print(f"ElevenLabs API error: Status {response.status_code}")
-                    print(f"Response: {response.text}")
-                    
-                    # Check for specific error types
-                    try:
-                        error_data = response.json()
-                        if "detail" in error_data:
-                            detail = error_data["detail"]
-                            if "status" in detail and detail["status"] == "missing_permissions":
-                                print(f"Permission error: {detail.get('message', 'Unknown permission error')}")
-                                if "text_to_speech" in str(detail):
-                                    self.elevenlabs_failed = True
-                                    return self.fallback_tts(text)
-                    except:
-                        pass
-                        
-                    # Try the client library as fallback
-                    print("Trying alternative method...")
-                
-            except ImportError:
-                print("Requests library not available, falling back to client library")
-                # Fall back to using the client library if requests is not available
-            except Exception as e:
-                print(f"Direct API request failed: {e}")
-                print("Trying client library instead...")
-            
-            # Create ElevenLabs client with the API key
-            client = ElevenLabs(api_key=self.elevenlabs_api_key)
-            
-            # Generate audio using the client directly
-            try:
-                # First try the direct method that returns bytes directly
-                audio_data = client.text_to_speech.generate(
-                    text=text,
-                    voice_id=voice_id,
-                    model_id=self.elevenlabs_model_id,
-                    voice_settings={
-                        "stability": 0.5,
-                        "similarity_boost": 0.5
-                    },
-                    output_format="mp3"
-                )
-                
-                # If this succeeds, audio_data should be bytes already
-                if isinstance(audio_data, bytes):
-                    print("Successfully generated speech with ElevenLabs client")
-                    return audio_data
-                
-                # If we got here, we need to handle a different return type
-                print(f"Using alternative handling for response type: {type(audio_data)}")
-                
-            except (AttributeError, TypeError) as e:
-                print(f"Using alternative API method: {e}")
-                # Fall back to the streaming method
-                pass
-                
-            # Fall back to the streaming method that returns a generator
-            audio_generator = client.text_to_speech.convert(
-                text=text,
-                voice_id=voice_id,
-                model_id=self.elevenlabs_model_id,
-                voice_settings={
-                    "stability": 0.5,
-                    "similarity_boost": 0.5
-                }
-            )
-            
-            # Convert the generator to bytes
-            audio_chunks = bytearray()
-            try:
-                # First try treating it as a regular generator
-                for chunk in audio_generator:
-                    if isinstance(chunk, bytes):
-                        audio_chunks.extend(chunk)
-                    else:
-                        # If it's not bytes, try to convert it
-                        audio_chunks.extend(bytes(chunk))
-            except TypeError:
-                # If audio_generator is not directly iterable, it might be a response object
-                # Try getting content or read() method
-                if hasattr(audio_generator, 'content'):
-                    audio_chunks.extend(audio_generator.content)
-                elif hasattr(audio_generator, 'read'):
-                    audio_chunks.extend(audio_generator.read())
-                elif hasattr(audio_generator, 'get_bytes'):
-                    audio_chunks.extend(audio_generator.get_bytes())
-                else:
-                    # As a last resort, try converting the entire object
-                    audio_chunks.extend(bytes(audio_generator))
-            
-            # Convert to bytes
-            audio_content = bytes(audio_chunks)
-            
-            # Make sure we actually got something substantial (audio files should be at least 1KB)
-            if len(audio_content) < 1000:
-                print(f"Warning: Generated audio seems too small ({len(audio_content)} bytes)")
-                return self.fallback_tts(text)
-            
-            print("Successfully generated speech with ElevenLabs client")
-            return audio_content
-                
-        except Exception as e:
-            error_str = str(e)
-            print(f"Exception generating speech with ElevenLabs: {e}")
-            
-            # Check if this is a permissions or authentication issue
-            if ("401" in error_str or 
-                "status_code: 401" in error_str or 
-                "missing_permissions" in error_str or 
-                "Unauthorized" in error_str or
-                "text_to_speech" in error_str):
-                
-                print("\nNOTE: Your ElevenLabs API key doesn't have the required text_to_speech permission.")
-                print("This is common for free accounts or if your subscription has expired.")
-                print("Switching to fallback TTS system for the rest of this session.")
-                
-                # Mark ElevenLabs as failed to avoid repeated attempts
-                self.elevenlabs_failed = True
-                
-                # Use fallback TTS
-                return self.fallback_tts(text)
-            
-            # For other errors, still try fallback
-            return self.fallback_tts(text)
-    
-    def fallback_tts(self, text):
-        """Fallback TTS system using pyttsx3 when ElevenLabs is not available"""
-        try:
-            if not self.has_fallback_tts or self.tts_engine is None:
-                # Try to initialize pyttsx3 again
-                try:
-                    self.tts_engine = pyttsx3.init()
-                    self.tts_engine.setProperty('rate', self.voice_rate)
-                    self.tts_engine.setProperty('volume', self.voice_volume)
-                    self.has_fallback_tts = True
-                except Exception as e:
-                    print(f"Cannot initialize fallback TTS: {e}")
-                    print("WARNING: No TTS system available - text will not be spoken")
-                    return None
-            
-            print(f"Using fallback TTS system for text: {text[:50]}...")
-            
-            # Create a temporary file for the audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-                temp_file_path = temp_file.name
-            
-            # Save speech to a temporary WAV file
-            self.tts_engine.save_to_file(text, temp_file_path)
-            self.tts_engine.runAndWait()
-            
-            # Read the file back as bytes
-            with open(temp_file_path, 'rb') as f:
-                audio_data = f.read()
-            
-            # Clean up temporary file
-            try:
-                os.unlink(temp_file_path)
-            except:
-                pass
-            
-            print("Successfully generated speech using fallback TTS")
-            return audio_data
-            
-        except Exception as e:
-            print(f"Error in fallback TTS: {e}")
-            return None
-            
-    def play_audio(self, audio_data):
-        """Play audio data with interrupt capability - plays the entire audio at once"""
-        if not audio_data:
-            print("No audio data to play, continuing with silent operation")
-            return True  # Return success so the conversation can continue
-            
-        try:
-            # Ensure audio_data is bytes
-            if not isinstance(audio_data, bytes):
-                print(f"Converting audio_data from {type(audio_data)} to bytes")
-                # Try different conversion methods depending on the type
-                if hasattr(audio_data, 'read'):
-                    audio_data = audio_data.read()
-                elif hasattr(audio_data, 'content'):
-                    audio_data = audio_data.content
-                elif isinstance(audio_data, (list, tuple)) and all(isinstance(x, bytes) for x in audio_data):
-                    # If it's a list/tuple of bytes, join them
-                    audio_data = b''.join(audio_data)
-                else:
-                    try:
-                        audio_data = bytes(audio_data)
-                    except:
-                        print("Could not convert audio_data to bytes")
-                        return True  # Return success so the conversation can continue
-            
-            # Create a temporary file to store the audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
-                temp_file.write(audio_data)
-                temp_file_path = temp_file.name
-            
-            # Load the audio file with pydub
-            try:
-                audio = AudioSegment.from_mp3(temp_file_path)
-            except Exception as e:
-                print(f"Failed to load MP3, trying as raw data: {e}")
-                # Try to handle raw audio data
-                with open(temp_file_path, 'rb') as f:
-                    raw_data = f.read()
-                # Save as WAV instead
-                wav_path = temp_file_path.replace('.mp3', '.wav')
-                with open(wav_path, 'wb') as f:
-                    f.write(raw_data)
-                try:
-                    audio = AudioSegment.from_file(wav_path)
-                    # Update temp_file_path to the new WAV file
-                    temp_file_path = wav_path
-                except Exception as e2:
-                    print(f"Still failed to load audio: {e2}")
-                    return True  # Return success so the conversation can continue
-            
-            # Create a player thread that plays the entire audio at once
-            def play_audio_thread():
-                try:
-                    print("Playing entire audio response in one continuous stream")
-                    
-                    # Check if we should stop before starting
-                    if self.stop_speaking:
-                        print("Audio playback canceled before starting")
-                        return
-                    
-                    # Play the entire audio at once
-                    play(audio)
-                    
-                except Exception as e:
-                    print(f"Error playing audio: {e}")
-                finally:
-                    # Clean up the temporary file
-                    try:
-                        os.unlink(temp_file_path)
-                    except:
-                        pass
-            
-            # Start the player thread
-            player_thread = threading.Thread(target=play_audio_thread)
-            player_thread.daemon = True
-            player_thread.start()
-            
-            # Store the player thread
-            self.audio_player = player_thread
-            
-            return True
-        except Exception as e:
-            print(f"Error setting up audio playback: {e}")
-            # Try to clean up any temporary files
-            try:
-                if 'temp_file_path' in locals():
-                    os.unlink(temp_file_path)
-            except:
-                pass
-            return True  # Return success so the conversation can continue
 
 
 def check_env_file():
@@ -2107,8 +1801,6 @@ def check_env_file():
         # Set essential environment variables
         os.environ["PORCUPINE_ACCESS_KEY"] = "qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag=="
         os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
-        os.environ["ELEVENLABS_API_KEY"] = "sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61"
-        os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
         os.environ["WAKE_WORD"] = "alexa"
         os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
         os.environ["SAVE_HISTORY"] = "true"
@@ -2133,8 +1825,6 @@ def check_env_file():
                 f.write("""# API Keys
 PORCUPINE_ACCESS_KEY=qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag==
 GEMINI_API_KEY=AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8
-ELEVENLABS_API_KEY=sk_a815878bc3184834c55fe90e89c9588bcb96759e64d9cb61
-ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 
 # Wake word settings
 WAKE_WORD=alexa

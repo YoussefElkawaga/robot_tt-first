@@ -18,7 +18,6 @@ import platform
 import glob
 from collections import deque
 import requests
-import io
 import tempfile
 
 # Import ElevenLabs client
@@ -32,20 +31,6 @@ except ImportError:
     from elevenlabs.client import ElevenLabs
     ELEVENLABS_CLIENT_AVAILABLE = True
     print("ElevenLabs client library installed successfully.")
-
-# Import pydub for audio playback
-try:
-    from pydub import AudioSegment
-    from pydub.playback import play
-    PYDUB_AVAILABLE = True
-except ImportError:
-    print("pydub not found. Installing...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub"])
-    from pydub import AudioSegment
-    from pydub.playback import play
-    PYDUB_AVAILABLE = True
-    print("pydub installed successfully.")
 
 # Set environment variables directly in code
 # This ensures the script works even if the .env file has issues
@@ -179,7 +164,7 @@ class ConversationRobot:
         # Initialize speech recognition
         self.recognizer = sr.Recognizer()
         
-        # Initialize pyttsx3 as fallback TTS
+        # Initialize text-to-speech with pyttsx3 as fallback
         try:
             self.tts_engine = pyttsx3.init()
             self.setup_voice(voice_id, rate, volume)
@@ -202,12 +187,12 @@ class ConversationRobot:
         self.elevenlabs_voices = []
         self.use_elevenlabs = True
         self.elevenlabs_failed = False
+        self.audio_player = None
         
         # Add flag to control speech interruption
         self.is_speaking = False
         self.stop_speaking = False
         self.interrupt_thread = None
-        self.audio_player = None
         
         # Initialize Gemini AI
         self.gemini_api_key = self._parse_env_str("GEMINI_API_KEY", "")
@@ -1232,8 +1217,21 @@ class ConversationRobot:
                         
                         # Set flags to stop speech
                         self.stop_speaking = True
+                        self.is_speaking = False
                         
-                        # Force stop the TTS engine
+                        # Try to kill any system audio processes
+                        try:
+                            if platform.system() == 'Windows':
+                                # Kill any audio processes on Windows
+                                os.system("taskkill /f /im wmplayer.exe >nul 2>&1")
+                            elif platform.system() == 'Darwin':  # macOS
+                                os.system("pkill afplay 2>/dev/null")
+                            else:  # Linux
+                                os.system("pkill mpg123 2>/dev/null")
+                        except:
+                            pass
+                        
+                        # Force stop the TTS engine if using fallback
                         try:
                             self.tts_engine.stop()
                         except:
@@ -1274,7 +1272,7 @@ class ConversationRobot:
         except Exception as e:
             print(f"Error setting up interrupt detection: {e}")
     
-    def speak(self, text, voice_id=None):
+    def speak(self, text):
         """Convert text to speech with improved natural delivery and IMMEDIATE interrupt capability"""
         if not text:
             return
@@ -1295,10 +1293,10 @@ class ConversationRobot:
                 _, frame = self.emotion_cap.read()
                 if frame is not None:
                     # Add a clear visual indicator that interruption is available
-                    cv2.rectangle(frame,
-                                 (0, frame.shape[0] - 40),
-                                 (frame.shape[1], frame.shape[0]),
-                                 (0, 100, 0),
+                    cv2.rectangle(frame, 
+                                 (0, frame.shape[0] - 40), 
+                                 (frame.shape[1], frame.shape[0]), 
+                                 (0, 100, 0), 
                                  -1)
                     
                     cv2.putText(
@@ -1318,25 +1316,39 @@ class ConversationRobot:
             self.interrupt_thread.daemon = True
             self.interrupt_thread.start()
             
-            # Generate speech for the entire text at once
-            print("Generating speech for the entire response at once...")
-            audio_data = self.elevenlabs_tts(processed_text, voice_id)
+            # Generate speech for the entire text at once using ElevenLabs
+            print("Generating speech with ElevenLabs for the entire response...")
+            audio_data = self.elevenlabs_tts(processed_text)
             
-            # Play the entire audio with interrupt capability
+            # Play the audio with interrupt capability
             if audio_data:
-                success = self.play_audio(audio_data)
+                self.play_audio(audio_data)
                 
-                # Wait for audio to finish or be interrupted
-                if success and self.audio_player and self.audio_player.is_alive():
-                    while self.audio_player.is_alive() and not self.stop_speaking:
-                        time.sleep(0.1)
+                # Wait for a moment to allow the audio to start playing
+                time.sleep(0.5)
+                
+                # Wait for interrupt or completion
+                while self.is_speaking and not self.stop_speaking:
+                    time.sleep(0.1)
             else:
-                print("No audio data returned - continuing with silent operation")
+                # Fallback to pyttsx3 if ElevenLabs failed
+                print("ElevenLabs TTS failed, using fallback TTS...")
+                self.tts_engine.say(processed_text)
+                self.tts_engine.runAndWait()
             
             # Check if speech was interrupted by wake word - IMMEDIATE RESPONSE
             if self.stop_speaking:
                 print(f"\n!!! SPEECH INTERRUPTED - IMMEDIATE RESPONSE !!!")
                 print("LISTENING FOR YOUR QUESTION NOW...")
+                
+                # Force stop any remaining speech instantly
+                try:
+                    self.tts_engine.stop()
+                except:
+                    pass
+                
+                # Skip the "Ready" prompt to start listening IMMEDIATELY
+                # This removes the delay between interrupt and listening
                 
                 # IMMEDIATELY listen for a new question without any delay
                 print("ACTIVELY LISTENING - SPEAK NOW")
@@ -1346,10 +1358,10 @@ class ConversationRobot:
                     _, frame = self.emotion_cap.read()
                     if frame is not None:
                         # Clear with bright red to indicate immediate listening
-                        cv2.rectangle(frame,
-                                    (0, 0),
-                                    (frame.shape[1], frame.shape[0]),
-                                    (0, 0, 200),
+                        cv2.rectangle(frame, 
+                                    (0, 0), 
+                                    (frame.shape[1], frame.shape[0]), 
+                                    (0, 0, 200), 
                                     -1)
                         
                         cv2.putText(
@@ -1549,7 +1561,7 @@ class ConversationRobot:
         if not self.setup_wake_word_detection():
             print("Failed to set up wake word detection. Exiting.")
             return
-            
+        
         # Verify ElevenLabs API key
         print("\nVerifying ElevenLabs API access...")
         api_works = self.verify_elevenlabs_api()
@@ -1777,7 +1789,7 @@ class ConversationRobot:
         except Exception as e:
             print(f"Error verifying ElevenLabs API: {e}")
             return False
-            
+    
     def elevenlabs_tts(self, text, voice_id=None):
         """Generate speech using ElevenLabs TTS API with fallback option"""
         # If ElevenLabs previously failed with auth error, use fallback immediately
@@ -1961,8 +1973,8 @@ class ConversationRobot:
                 # Try to initialize pyttsx3 again
                 try:
                     self.tts_engine = pyttsx3.init()
-                    self.tts_engine.setProperty('rate', self.voice_rate)
-                    self.tts_engine.setProperty('volume', self.voice_volume)
+                    self.tts_engine.setProperty('rate', self._parse_env_int("VOICE_RATE", 150))
+                    self.tts_engine.setProperty('volume', self._parse_env_float("VOICE_VOLUME", 0.8))
                     self.has_fallback_tts = True
                 except Exception as e:
                     print(f"Cannot initialize fallback TTS: {e}")
@@ -1995,97 +2007,46 @@ class ConversationRobot:
         except Exception as e:
             print(f"Error in fallback TTS: {e}")
             return None
-            
+    
     def play_audio(self, audio_data):
-        """Play audio data with interrupt capability - plays the entire audio at once"""
+        """Play audio data with interrupt capability"""
         if not audio_data:
             print("No audio data to play, continuing with silent operation")
             return True  # Return success so the conversation can continue
             
         try:
-            # Ensure audio_data is bytes
-            if not isinstance(audio_data, bytes):
-                print(f"Converting audio_data from {type(audio_data)} to bytes")
-                # Try different conversion methods depending on the type
-                if hasattr(audio_data, 'read'):
-                    audio_data = audio_data.read()
-                elif hasattr(audio_data, 'content'):
-                    audio_data = audio_data.content
-                elif isinstance(audio_data, (list, tuple)) and all(isinstance(x, bytes) for x in audio_data):
-                    # If it's a list/tuple of bytes, join them
-                    audio_data = b''.join(audio_data)
-                else:
-                    try:
-                        audio_data = bytes(audio_data)
-                    except:
-                        print("Could not convert audio_data to bytes")
-                        return True  # Return success so the conversation can continue
-            
-            # Create a temporary file to store the audio
+            # Write audio data to a temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
                 temp_file.write(audio_data)
                 temp_file_path = temp_file.name
             
-            # Load the audio file with pydub
-            try:
-                audio = AudioSegment.from_mp3(temp_file_path)
-            except Exception as e:
-                print(f"Failed to load MP3, trying as raw data: {e}")
-                # Try to handle raw audio data
-                with open(temp_file_path, 'rb') as f:
-                    raw_data = f.read()
-                # Save as WAV instead
-                wav_path = temp_file_path.replace('.mp3', '.wav')
-                with open(wav_path, 'wb') as f:
-                    f.write(raw_data)
+            # Play the audio file using the system's default player
+            if platform.system() == 'Windows':
+                os.system(f'start {temp_file_path}')
+            elif platform.system() == 'Darwin':  # macOS
+                os.system(f'afplay {temp_file_path}')
+            else:  # Linux and others
+                os.system(f'mpg123 {temp_file_path}')
+            
+            # Clean up the temporary file after a delay
+            def cleanup_temp_file():
+                time.sleep(5)  # Wait for the audio to finish playing
                 try:
-                    audio = AudioSegment.from_file(wav_path)
-                    # Update temp_file_path to the new WAV file
-                    temp_file_path = wav_path
-                except Exception as e2:
-                    print(f"Still failed to load audio: {e2}")
-                    return True  # Return success so the conversation can continue
+                    os.unlink(temp_file_path)
+                except:
+                    pass
             
-            # Create a player thread that plays the entire audio at once
-            def play_audio_thread():
-                try:
-                    print("Playing entire audio response in one continuous stream")
-                    
-                    # Check if we should stop before starting
-                    if self.stop_speaking:
-                        print("Audio playback canceled before starting")
-                        return
-                    
-                    # Play the entire audio at once
-                    play(audio)
-                    
-                except Exception as e:
-                    print(f"Error playing audio: {e}")
-                finally:
-                    # Clean up the temporary file
-                    try:
-                        os.unlink(temp_file_path)
-                    except:
-                        pass
+            cleanup_thread = threading.Thread(target=cleanup_temp_file)
+            cleanup_thread.daemon = True
+            cleanup_thread.start()
             
-            # Start the player thread
-            player_thread = threading.Thread(target=play_audio_thread)
-            player_thread.daemon = True
-            player_thread.start()
-            
-            # Store the player thread
-            self.audio_player = player_thread
+            # Store the player thread for interrupt handling
+            self.audio_player = cleanup_thread
             
             return True
         except Exception as e:
-            print(f"Error setting up audio playback: {e}")
-            # Try to clean up any temporary files
-            try:
-                if 'temp_file_path' in locals():
-                    os.unlink(temp_file_path)
-            except:
-                pass
-            return True  # Return success so the conversation can continue
+            print(f"Error playing audio: {e}")
+            return False
 
 
 def check_env_file():
