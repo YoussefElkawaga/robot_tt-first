@@ -23,9 +23,19 @@ def fix_permissions(port):
     try:
         # Try to make the port accessible without sudo
         print(f"Attempting to fix permissions for {port}...")
-        os.system(f"sudo chmod 666 {port}")
+        # Use NOPASSWD sudo for permission fixing
+        # This assumes you've set up sudo permissions correctly
+        result = subprocess.run(['sudo', '-n', 'chmod', '666', port], 
+                              capture_output=True, text=True)
+                              
+        if result.returncode != 0:
+            print("Permission fix failed with sudo -n, trying with regular sudo...")
+            # Regular sudo might prompt for password
+            os.system(f"sudo chmod 666 {port}")
+            
         return True
-    except:
+    except Exception as e:
+        print(f"Error fixing permissions: {e}")
         return False
 
 def send_arduino_command(command, port=None, baud_rate=9600):
@@ -37,11 +47,17 @@ def send_arduino_command(command, port=None, baud_rate=9600):
         # First try without permission fixing
         try:
             arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
-        except (serial.SerialException, PermissionError):
-            # If permission error, try to fix permissions
-            fix_permissions(arduino_port)
-            time.sleep(0.5)  # Wait for permission change to take effect
-            arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+        except Exception as e:
+            # Check if it's a permission error
+            if "permission" in str(e).lower() or "access" in str(e).lower():
+                print("Permission error detected, attempting to fix...")
+                # If permission error, try to fix permissions
+                fix_permissions(arduino_port)
+                time.sleep(0.5)  # Wait for permission change to take effect
+                arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+            else:
+                # Re-raise if it's not a permission error
+                raise
         
         print(f"✅ Connected to Arduino on {arduino_port}")
         time.sleep(2)  # Wait for Arduino to reset after connection
@@ -70,10 +86,12 @@ def send_arduino_command(command, port=None, baud_rate=9600):
         print("1. Run this command to add your user to the dialout group:")
         print("   sudo usermod -a -G dialout $USER")
         print("   (log out and log back in for changes to take effect)")
-        print("2. If that doesn't work, try running the script with sudo:")
-        print("   sudo python3 serial.py")
+        print("2. If that doesn't work, try setting up sudo without password for Arduino commands:")
+        print("   sudo visudo -f /etc/sudoers.d/arduino-permissions")
+        print("   And add: yourusername ALL=(ALL) NOPASSWD: /bin/chmod 666 /dev/ttyACM*, /bin/chmod 666 /dev/ttyUSB*")
         print("3. Check if your Arduino is properly connected")
         print("4. Verify the correct port with: ls -l /dev/tty*")
+        print("5. Install pyserial if needed: pip install pyserial")
         return False
 
 # If script is run directly, use command line arguments
@@ -90,5 +108,5 @@ if __name__ == "__main__":
         # Execute command
         send_arduino_command(command, port)
     else:
-        print("Usage: python serial.py <command> [port]")
-        print("Example: python serial.py 'shake_hand' '/dev/ttyACM0'")
+        print("Usage: python arduino_helper.py <command> [port]")
+        print("Example: python arduino_helper.py 'shake_hand' '/dev/ttyACM0'") 
