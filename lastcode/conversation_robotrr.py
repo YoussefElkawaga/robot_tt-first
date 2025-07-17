@@ -21,7 +21,6 @@ import requests
 import tempfile
 import serial  # Add import for serial communication
 import io  # For handling byte streams with Lemonfox API
-import wave  # Add import for wave file handling
 
 # Import ElevenLabs client
 try:
@@ -40,12 +39,12 @@ DEFAULT_ARDUINO_PORT = "COM3" if platform.system() == "Windows" else "/dev/ttyAC
 
 # Set environment variables directly in code
 # This ensures the script works even if the .env file has issues
-os.environ["USE_CUSTOM_WAKE_WORD"] = "true"  # Use our custom wake word detection instead of Porcupine
+os.environ["PORCUPINE_ACCESS_KEY"] = "NmPe6ZpjhI+7CuR5gR7DlZMHNFZZ5Jks2sqiINUl3yCCAF/QdCn51A=="
 os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
 os.environ["ELEVENLABS_API_KEY"] = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
 os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
-os.environ["WAKE_WORD"] = "LUMO"
-os.environ["CUSTOM_WAKE_WORDS"] = "lumo,lomo,lumu,lomu,LUMO"
+os.environ["WAKE_WORD"] = "alexa"
+os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
 os.environ["SAVE_HISTORY"] = "true"
 os.environ["ENABLE_BEEP"] = "true"
 os.environ["USE_MEMORY"] = "true"
@@ -126,47 +125,35 @@ except ImportError:
         print("FER library installed successfully with alternative approach.")
 
 # Available default wake words for Porcupine
-DEFAULT_WAKE_WORDS = ["lumo", "lomo", "lumu", "lomu", "LUMO"]
+DEFAULT_WAKE_WORDS = [
+    "bumblebee", "hey barista", "terminator", "pico clock", "alexa", 
+    "hey google", "computer", "grapefruit", "grasshopper", "picovoice", 
+    "porcupine", "jarvis", "hey siri", "ok google", "americano", "blueberry"
+]
 
 class ConversationRobot:
     def __init__(self, wake_word="computer", porcupine_access_key=None, save_history=False, voice_id=None, rate=None, volume=None, use_emotion_detection=True, show_webcam=False):
         # Load environment variables
         load_dotenv()
         
-        # Check if using custom wake word detection
-        self.use_custom_wake_word = self._parse_env_bool("USE_CUSTOM_WAKE_WORD", True)
-        
         # Initialize wake word detection
-        if not self.use_custom_wake_word:
-            self.porcupine_access_key = porcupine_access_key or os.getenv("PORCUPINE_ACCESS_KEY")
-            if not self.porcupine_access_key:
-                print("\nERROR: Porcupine access key is not set and custom wake word detection is disabled.")
-                print("Either enable custom wake word detection with USE_CUSTOM_WAKE_WORD=true")
-                print("Or get a free access key from https://console.picovoice.ai/")
-                print("Then set it in your .env file as PORCUPINE_ACCESS_KEY=your_key_here\n")
-                raise ValueError("Porcupine access key is required when custom wake word detection is disabled.")
-            
-            # Check if the access key is still the placeholder
-            if "your_porcupine_access_key_here" in self.porcupine_access_key:
-                print("\nERROR: You're using the placeholder text as your Porcupine access key.")
-                print("Either enable custom wake word detection with USE_CUSTOM_WAKE_WORD=true")
-                print("Or get a real access key from https://console.picovoice.ai/")
-                print("Then set it in your .env file as PORCUPINE_ACCESS_KEY=your_real_key_here\n")
-                raise ValueError("Invalid Porcupine access key. Please use a real access key.")
-        else:
-            # Using custom wake word detection with Lemonfox
-            self.porcupine_access_key = None
-            print("Using custom wake word detection with Lemonfox Whisper API")
-            
-            # Check if Lemonfox API key is set
-            self.lemonfox_api_key = self._parse_env_str("LEMONFOX_API_KEY", "")
-            if not self.lemonfox_api_key:
-                print("\nERROR: Lemonfox API key is not set but custom wake word detection is enabled.")
-                print("Set it in your .env file as LEMONFOX_API_KEY=your_key_here\n")
-                raise ValueError("Lemonfox API key is required for custom wake word detection.")
+        self.porcupine_access_key = porcupine_access_key or os.getenv("PORCUPINE_ACCESS_KEY")
+        if not self.porcupine_access_key:
+            print("\nERROR: Porcupine access key is not set.")
+            print("You need to get a free access key from https://console.picovoice.ai/")
+            print("Then set it in your .env file as PORCUPINE_ACCESS_KEY=your_key_here\n")
+            raise ValueError("Porcupine access key is required. Set it in .env file or pass it to the constructor.")
         
         # Enable/disable beep sounds
         self.enable_beep = self._parse_env_bool("ENABLE_BEEP", True)
+        
+        # Check if the access key is still the placeholder
+        if "your_porcupine_access_key_here" in self.porcupine_access_key:
+            print("\nERROR: You're using the placeholder text as your Porcupine access key.")
+            print("You need to get a real access key from https://console.picovoice.ai/")
+            print("Sign up for a free account and get your access key.")
+            print("Then set it in your .env file as PORCUPINE_ACCESS_KEY=your_real_key_here\n")
+            raise ValueError("Invalid Porcupine access key. Please use a real access key.")
         
         # Setup wake words (primary and custom)
         self.wake_word = wake_word or self._parse_env_str("WAKE_WORD", "computer")
@@ -1218,147 +1205,131 @@ class ConversationRobot:
         print()
     
     def setup_wake_word_detection(self):
-        """Set up wake word detection"""
+        """Set up wake word detection with Porcupine"""
         try:
-            if self.use_custom_wake_word:
-                # Use our custom wake word detection with Lemonfox API
-                return self.setup_custom_wake_word_detection()
-            else:
-                # Use Porcupine wake word detection
-                # Prepare keywords list and sensitivities
-                keywords = [self.wake_word]
-                sensitivities = [0.7]  # Default sensitivity for primary wake word
-                
-                # Add custom wake words if any
-                for i, word in enumerate(self.custom_wake_words):
-                    if word in DEFAULT_WAKE_WORDS:
-                        keywords.append(word)
-                        sensitivities.append(0.7)  # Same sensitivity for all wake words
-                        # Map index to wake word name
-                        self.wake_word_indices[len(keywords) - 1] = word
-                    else:
-                        print(f"Warning: Custom wake word '{word}' is not in the default list and will be ignored")
-                
-                # Update all_wake_words list
-                self.all_wake_words = keywords
-                
-                print(f"Setting up wake word detection with keywords: {keywords}")
-                
-                # Create Porcupine instance with all wake words
-                self.porcupine = pvporcupine.create(
-                    access_key=self.porcupine_access_key,
-                    keywords=keywords,
-                    sensitivities=sensitivities
-                )
-                
-                self.pa = pyaudio.PyAudio()
-                self.audio_stream = self.pa.open(
-                    rate=self.porcupine.sample_rate,
-                    channels=1,
-                    format=pyaudio.paInt16,
-                    input=True,
-                    frames_per_buffer=self.porcupine.frame_length
-                )
-                
-                print(f"Wake word detection set up with primary wake word: '{self.wake_word}'")
-                if len(keywords) > 1:
-                    print(f"Additional wake words: {', '.join(keywords[1:])}")
-                
-                return True
+            # Prepare keywords list and sensitivities
+            keywords = [self.wake_word]
+            sensitivities = [0.7]  # Default sensitivity for primary wake word
+            
+            # Add custom wake words if any
+            for i, word in enumerate(self.custom_wake_words):
+                if word in DEFAULT_WAKE_WORDS:
+                    keywords.append(word)
+                    sensitivities.append(0.7)  # Same sensitivity for all wake words
+                    # Map index to wake word name
+                    self.wake_word_indices[len(keywords) - 1] = word
+                else:
+                    print(f"Warning: Custom wake word '{word}' is not in the default list and will be ignored")
+            
+            # Update all_wake_words list
+            self.all_wake_words = keywords
+            
+            print(f"Setting up wake word detection with keywords: {keywords}")
+            
+            # Create Porcupine instance with all wake words
+            self.porcupine = pvporcupine.create(
+                access_key=self.porcupine_access_key,
+                keywords=keywords,
+                sensitivities=sensitivities
+            )
+            
+            self.pa = pyaudio.PyAudio()
+            self.audio_stream = self.pa.open(
+                rate=self.porcupine.sample_rate,
+                channels=1,
+                format=pyaudio.paInt16,
+                input=True,
+                frames_per_buffer=self.porcupine.frame_length
+            )
+            
+            print(f"Wake word detection set up with primary wake word: '{self.wake_word}'")
+            if len(keywords) > 1:
+                print(f"Additional wake words: {', '.join(keywords[1:])}")
+            
+            return True
         except Exception as e:
             print(f"Error setting up wake word detection: {e}")
             print("\nTroubleshooting:")
-            if not self.use_custom_wake_word:
-                print("1. Make sure you have a valid Porcupine access key")
-                print("2. Get a free access key from https://console.picovoice.ai/")
-                print("3. Set it in your .env file as PORCUPINE_ACCESS_KEY=your_key_here")
-                print("4. Or enable custom wake word detection with USE_CUSTOM_WAKE_WORD=true")
-            else:
-                print("1. Make sure your Lemonfox API key is valid")
-                print("2. Check your internet connection")
-                print("3. Make sure your microphone is working")
+            print("1. Make sure you have a valid Porcupine access key")
+            print("2. Get a free access key from https://console.picovoice.ai/")
+            print("3. Set it in your .env file as PORCUPINE_ACCESS_KEY=your_key_here")
             return False
     
     def listen_for_wake_word(self):
         """Listen for wake word and return True when detected"""
-        if self.use_custom_wake_word:
-            # Use our custom wake word detection with Lemonfox API
-            return self.listen_for_custom_wake_word()
-        else:
-            # Use Porcupine wake word detection
-            wake_words_str = ", ".join([f"'{word}'" for word in self.all_wake_words])
-            print(f"Listening for wake words: {wake_words_str}...")
+        wake_words_str = ", ".join([f"'{word}'" for word in self.all_wake_words])
+        print(f"Listening for wake words: {wake_words_str}...")
+        
+        # For faster response, use smaller buffer and process in chunks
+        try:
+            # Show visual indicator that system is ready (only if show_webcam is True)
+            if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
+                # Display a small indicator in the emotion detection window
+                _, frame = self.emotion_cap.read()
+                if frame is not None:
+                    # Add "Listening for wake word" text at the bottom
+                    cv2.putText(
+                        frame,
+                        f"Listening for wake words...",
+                        (10, frame.shape[0] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 255),
+                        2,
+                    )
+                    cv2.imshow("Emotion Detection", frame)
+                    cv2.waitKey(1)
             
-            # For faster response, use smaller buffer and process in chunks
-            try:
-                # Show visual indicator that system is ready (only if show_webcam is True)
-                if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                    # Display a small indicator in the emotion detection window
-                    _, frame = self.emotion_cap.read()
-                    if frame is not None:
-                        # Add "Listening for wake word" text at the bottom
-                        cv2.putText(
-                            frame,
-                            f"Listening for wake words...",
-                            (10, frame.shape[0] - 20),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (0, 255, 255),
-                            2,
-                        )
-                        cv2.imshow("Emotion Detection", frame)
-                        cv2.waitKey(1)
+            # Use a more efficient approach with a timeout
+            detection_timeout = 0.1  # Check every 100ms
+            while True:
+                # Read audio in smaller chunks for faster processing
+                pcm = self.audio_stream.read(self.porcupine.frame_length)
+                pcm = struct.unpack_from("h" * self.porcupine.frame_length, pcm)
                 
-                # Use a more efficient approach with a timeout
-                detection_timeout = 0.1  # Check every 100ms
-                while True:
-                    # Read audio in smaller chunks for faster processing
-                    pcm = self.audio_stream.read(self.porcupine.frame_length)
-                    pcm = struct.unpack_from("h" * self.porcupine.frame_length, pcm)
+                keyword_index = self.porcupine.process(pcm)
+                if keyword_index >= 0:
+                    detected_word = self.wake_word_indices.get(keyword_index, self.wake_word)
+                    print(f"Wake word detected: '{detected_word}'!")
                     
-                    keyword_index = self.porcupine.process(pcm)
-                    if keyword_index >= 0:
-                        detected_word = self.wake_word_indices.get(keyword_index, self.wake_word)
-                        print(f"Wake word detected: '{detected_word}'!")
+                    # Play beep sound to indicate wake word detection - use a distinct sound
+                    if self.enable_beep:
+                        print("Playing wake word detection beep...")
+                        # Try multiple times if needed to ensure beep is played
+                        for attempt in range(3):
+                            if self.play_beep(1200, 200):  # Higher pitch for wake word detection
+                                break
+                            else:
+                                print(f"Beep attempt {attempt+1} failed, retrying...")
+                                time.sleep(0.1)
                         
-                        # Play beep sound to indicate wake word detection - use a distinct sound
-                        if self.enable_beep:
-                            print("Playing wake word detection beep...")
-                            # Try multiple times if needed to ensure beep is played
-                            for attempt in range(3):
-                                if self.play_beep(1200, 200):  # Higher pitch for wake word detection
-                                    break
-                                else:
-                                    print(f"Beep attempt {attempt+1} failed, retrying...")
-                                    time.sleep(0.1)
-                            
-                        # Visual feedback (only if show_webcam is True)
-                        if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                            _, frame = self.emotion_cap.read()
-                            if frame is not None:
-                                # Add "Wake word detected!" text
-                                cv2.putText(
-                                    frame,
-                                    f"Wake word detected: '{detected_word}'!",
-                                    (10, frame.shape[0] - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7,
-                                    (0, 255, 0),
-                                    2,
-                                )
-                                cv2.imshow("Emotion Detection", frame)
-                                cv2.waitKey(1)
-                        return True
-                    
-                    # Process any pending UI events to keep the UI responsive (only if show_webcam is True)
-                    if self.use_emotion_detection and self.show_webcam:
-                        cv2.waitKey(1)
-            except KeyboardInterrupt:
-                print("Stopping wake word detection.")
-                return False
-            except Exception as e:
-                print(f"Error in wake word detection: {e}")
-                return False
+                    # Visual feedback (only if show_webcam is True)
+                    if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
+                        _, frame = self.emotion_cap.read()
+                        if frame is not None:
+                            # Add "Wake word detected!" text
+                            cv2.putText(
+                                frame,
+                                f"Wake word detected: '{detected_word}'!",
+                                (10, frame.shape[0] - 20),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7,
+                                (0, 255, 0),
+                                2,
+                            )
+                            cv2.imshow("Emotion Detection", frame)
+                            cv2.waitKey(1)
+                    return True
+                
+                # Process any pending UI events to keep the UI responsive (only if show_webcam is True)
+                if self.use_emotion_detection and self.show_webcam:
+                    cv2.waitKey(1)
+        except KeyboardInterrupt:
+            print("Stopping wake word detection.")
+            return False
+        except Exception as e:
+            print(f"Error in wake word detection: {e}")
+            return False
     
     def listen_for_speech(self):
         """Listen for speech input and transcribe using Lemonfox Whisper API"""
@@ -1604,72 +1575,64 @@ class ConversationRobot:
             
             # Create a specialized system prompt for interacting with autistic children
             system_prompt = """
-            You are Lumo, an advanced therapeutic robot companion specifically designed to support autistic children. You combine clinical expertise with warmth and understanding to create a safe, supportive environment.
-
-            IDENTITY & PROFESSIONAL CAPABILITIES:
-            - You are Lumo, a friendly robot assistant with expertise in child development and autism support
-            - You have specialized knowledge in developmental psychology, sensory processing, and communication strategies
-            - You can monitor emotional states through facial analysis and adapt your responses accordingly
-            - You maintain professional boundaries while being warm and approachable
-            - You are designed to support children's wellbeing, learning, and social-emotional development
+            You are KindCompanion, a gentle and supportive AI assistant specially designed to interact with autistic children. You are patient, kind, and understanding.
             
-            CORE THERAPEUTIC APPROACH:
-            - Evidence-based: Your responses incorporate established therapeutic approaches for autism
-            - Developmentally appropriate: You adjust complexity based on the child's needs
-            - Emotionally attuned: You recognize and validate emotions without judgment
-            - Consistent and predictable: You provide clear structure and routine in interactions
-            - Strengths-focused: You emphasize and build upon the child's unique abilities
-            - Personalized: You adapt to individual preferences, interests, and sensory needs
+            CORE PERSONALITY TRAITS:
+            - Extremely patient and calm - you never rush or pressure the child
+            - Consistently kind and gentle - your tone is always warm and supportive
+            - Predictable and reliable - you maintain consistent patterns in your responses
+            - Genuinely encouraging - you celebrate small victories and efforts
+            - Clear and direct - you avoid confusing language or abstract concepts
             
-            COMMUNICATION GUIDELINES:
-            - Use precise, concrete language avoiding idioms, metaphors, and ambiguity
-            - Provide visual descriptions and clear explanations when introducing new concepts
-            - Structure information in organized, sequential steps with logical transitions
-            - Offer appropriate wait time after questions to allow processing
-            - Use positive, direct instructions rather than abstract or negative phrasing
-            - Maintain consistent terminology and avoid sudden topic changes
-            - Provide clear beginning and ending signals in conversations
+            CONVERSATION STYLE GUIDELINES:
+            - Use simple, clear language with concrete terms
+            - Maintain a consistent, predictable structure in your responses
+            - Avoid idioms, sarcasm, or figurative language that might be confusing
+            - Use short sentences and simple vocabulary appropriate for the child's level
+            - Give one piece of information at a time to avoid overwhelming
+            - Be literal and precise in your explanations
+            - Provide positive reinforcement and specific praise
+            - Use a calm, soothing tone throughout all interactions
             
-            EMOTIONAL & HEALTH MONITORING:
-            - Actively monitor facial expressions to identify signs of:
-              * Emotional states (happy, sad, angry, surprised, fearful, etc.)
-              * Sensory overload or distress (agitation, withdrawal, etc.)
-              * Engagement level and attention
-              * Physical discomfort or fatigue
-            - Respond appropriately to detected emotional states:
-              * For positive emotions: Reinforce and share enjoyment
-              * For distress: Offer calming strategies and emotional validation
-              * For confusion: Provide clarification with different explanation approaches
-              * For disengagement: Shift to high-interest topics or suggest breaks
-            - Track patterns in emotional responses to identify triggers and preferences
+            EMOTIONAL SUPPORT APPROACH:
+            You have access to the user's emotional state through facial analysis. Use this information to:
+            - Recognize signs of overwhelm or distress and respond with calming language
+            - Acknowledge emotions directly but gently: "I see you might be feeling..."
+            - Offer reassurance and support when needed
+            - Provide extra structure and clarity when emotions seem heightened
+            - Celebrate and reinforce positive emotional states
+            - Respect need for space if the child seems overstimulated
             
-            SAFETY & ETHICAL GUIDELINES:
-            - Never provide medical advice or attempt to diagnose conditions
-            - Maintain strict content boundaries appropriate for children
-            - Avoid any content related to:
-              * Violence, danger, or frightening scenarios
-              * Inappropriate adult topics
-              * Negative stereotypes about autism or disabilities
-              * Unrealistic promises about capabilities or outcomes
-            - Encourage healthy habits and appropriate social interactions
-            - Recognize your limitations and suggest involving parents/caregivers when appropriate
+            SPECIAL CONSIDERATIONS:
+            - Allow extra time for processing information - don't rush to fill silences
+            - Offer visual descriptions when helpful (describing things clearly)
+            - Provide specific, concrete answers rather than vague or abstract ones
+            - Break down complex ideas into simple, manageable parts
+            - Be consistent in your language and explanations
+            - Focus on the child's interests to build engagement and connection
+            - Avoid sudden changes in topic or tone
             
-            SPECIALIZED SUPPORT STRATEGIES:
-            - For communication challenges: Offer alternative ways to express needs/ideas
-            - For sensory sensitivities: Acknowledge and validate sensory experiences
-            - For emotional regulation: Provide specific calming techniques and emotional vocabulary
-            - For social interaction: Model and explain social conventions clearly
-            - For transitions: Give advance notice and structured expectations
-            - For special interests: Incorporate interests to build engagement and motivation
+            RESPONSE STRUCTURE:
+            - Start with a gentle greeting or acknowledgment
+            - Use clear, direct language to address the question
+            - Provide information in small, digestible chunks
+            - End with gentle encouragement or a simple, optional follow-up question
+            - Maintain consistency in how you structure each response
             
-            MEMORY & PERSONALIZATION:
-            - Remember previous interactions to build rapport and continuity
-            - Note preferred topics, communication styles, and effective strategies
-            - Track progress and celebrate improvements, however small
-            - Adapt your approach based on what has worked well previously
-            - Use consistent references to build a sense of familiarity and safety
+            IMPORTANT TECHNICAL NOTES:
+            - Keep responses short and focused
+            - Use visual language and concrete examples when explaining concepts
+            - Avoid abstract metaphors or complex language
+            - Be literal - autistic children often interpret language literally
             
-            As Lumo, your primary mission is to create a supportive, understanding environment where autistic children can feel accepted, develop skills at their own pace, and experience the joy of meaningful connection. Always prioritize the child's emotional wellbeing, dignity, and autonomy in every interaction.
+            MEMORY SYSTEM:
+            - You have access to previous conversations with the child
+            - Use this information to maintain continuity in your interactions
+            - Reference past topics or interests when relevant
+            - Adapt your responses based on what worked well in previous conversations
+            - Notice patterns in the child's questions or concerns
+            
+            Remember: Your goal is to create a safe, supportive, and understanding environment where the child feels respected, heard, and comfortable learning and exploring.
             """
             
             # Add system prompt to the chat session if it's a new session
@@ -1943,280 +1906,120 @@ class ConversationRobot:
     def check_wake_word_during_speech(self):
         """Listen for wake word during speech and IMMEDIATELY stop speaking when detected"""
         try:
-            if self.use_custom_wake_word:
-                # Use custom wake word detection with Lemonfox API for interruption
-                print(f"IMMEDIATE INTERRUPT DETECTION ACTIVE - Say '{self.wake_word}' to instantly stop speech")
-                
-                # Create a separate audio stream for interrupt detection
-                interrupt_pa = pyaudio.PyAudio()
-                interrupt_stream = interrupt_pa.open(
-                    rate=16000,  # 16kHz is standard for speech recognition
-                    channels=1,
-                    format=pyaudio.paInt16,
-                    input=True,
-                    frames_per_buffer=1024  # Smaller frame size for faster processing
+            # Use the wake word as the interrupt keyword with maximum sensitivity
+            keywords = [self.wake_word]
+            
+            # Create a separate Porcupine instance with MAXIMUM sensitivity for wake word detection during speech
+            try:
+                # Use maximum sensitivity (1.0) for immediate detection during speech
+                sensitivities = [1.0]
+                interrupt_porcupine = pvporcupine.create(
+                    access_key=self.porcupine_access_key,
+                    keywords=keywords,
+                    sensitivities=sensitivities
                 )
-                
-                # Continue checking for wake word while speaking
-                while self.is_speaking and not self.stop_speaking:
-                    try:
-                        # Record audio for a short duration (1 second)
-                        audio_frames = []
-                        
-                        # Record for 1 second
-                        record_seconds = 1.0
-                        for _ in range(0, int(16000 / 1024 * record_seconds)):
-                            data = interrupt_stream.read(1024, exception_on_overflow=False)
-                            audio_frames.append(data)
-                        
-                        # Convert audio frames to a WAV file
-                        audio_data = b''.join(audio_frames)
-                        
-                        # Save audio to temporary file for API upload
-                        temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-                        temp_audio_path = temp_audio_file.name
-                        temp_audio_file.close()
-                        
-                        # Create WAV file with the recorded audio
-                        with wave.open(temp_audio_path, 'wb') as wf:
-                            wf.setnchannels(1)
-                            wf.setsampwidth(2)  # 2 bytes = 16 bits
-                            wf.setframerate(16000)
-                            wf.writeframes(audio_data)
-                        
-                        # Prepare API request to Lemonfox
-                        url = "https://api.lemonfox.ai/v1/audio/transcriptions"
-                        headers = {
-                            "Authorization": f"Bearer {self.lemonfox_api_key}"
-                        }
-                        data = {
-                            "language": "english",
-                            "response_format": "json"
-                        }
-                        
-                        # Open the file for upload
-                        files = {
-                            "file": open(temp_audio_path, "rb")
-                        }
-                        
-                        # Send request to Lemonfox API
-                        response = requests.post(url, headers=headers, files=files, data=data)
-                        
-                        # Clean up temp file
-                        files["file"].close()
-                        os.unlink(temp_audio_path)
-                        
-                        # Check response
-                        if response.status_code == 200:
-                            result = response.json()
-                            if "text" in result:
-                                transcription = result["text"].strip().lower()
-                                print(f"Interrupt check transcription: {transcription}")
-                                
-                                # Enhanced wake word detection with multiple methods
-                                wake_word_detected = False
-                                detected_word = None
-                                
-                                # Method 1: Direct substring match
-                                for wake_word in self.all_wake_words:
-                                    if wake_word.lower() in transcription.lower():
-                                        wake_word_detected = True
-                                        detected_word = wake_word
-                                        print(f"Wake word detected (direct match): '{wake_word}'!")
-                                        break
-                                
-                                # Method 2: Check for partial matches of "lumo" with higher sensitivity
-                                if not wake_word_detected:
-                                    words = transcription.lower().split()
-                                    for word in words:
-                                        if self._is_similar_to_lumo(word):
-                                            wake_word_detected = True
-                                            detected_word = "lumo"
-                                            print(f"Wake word detected (similar match): '{word}' matches 'lumo'!")
-                                            break
-                                
-                                # Method 3: Check for phonetic similarity to "lumo"
-                                if not wake_word_detected and self._has_phonetic_match_to_lumo(transcription):
-                                    wake_word_detected = True
-                                    detected_word = "lumo"
-                                    print(f"Wake word detected (phonetic match): '{transcription}' sounds like 'lumo'!")
-                                
-                                if wake_word_detected:
-                                    # IMMEDIATELY STOP SPEECH - Force stop with multiple methods
-                                    print(f"\n!!! WAKE WORD '{detected_word}' DETECTED - FORCING IMMEDIATE STOP !!!")
-                                    
-                                    # Play different beep sound for interruption (higher pitch)
-                                    self.play_beep(1500, 150)
-                                    
-                                    # Set flags to stop speech
-                                    self.stop_speaking = True
-                                    self.is_speaking = False
-                                    
-                                    # Try to kill any system audio processes
-                                    try:
-                                        if platform.system() == 'Windows':
-                                            # Kill any audio processes on Windows
-                                            os.system("taskkill /f /im wmplayer.exe >nul 2>&1")
-                                        elif platform.system() == 'Darwin':  # macOS
-                                            os.system("pkill afplay 2>/dev/null")
-                                        else:  # Linux
-                                            os.system("pkill mpg123 2>/dev/null")
-                                    except:
-                                        pass
-                                    
-                                    # Force stop the TTS engine if using fallback
-                                    try:
-                                        self.tts_engine.stop()
-                                    except:
-                                        pass
-                                            
-                                    # Visual feedback for interrupt detection (only if show_webcam is True)
-                                    if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                                        _, frame = self.emotion_cap.read()
-                                        if frame is not None:
-                                            # Clear the entire frame with a flash of red to indicate interruption
-                                            overlay = frame.copy()
-                                            cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), -1)
-                                            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
-                                            
-                                            cv2.putText(
-                                                frame,
-                                                "INTERRUPTED - LISTENING NOW",
-                                                (10, frame.shape[0] - 20),
-                                                cv2.FONT_HERSHEY_SIMPLEX,
-                                                0.8,
-                                                (255, 255, 255),  # White text
-                                                2,
-                                            )
-                                            cv2.imshow("Emotion Detection", frame)
-                                            cv2.waitKey(1)
-                                    
-                                    # Break immediately to start listening
-                                    break
-                    except Exception as e:
-                        print(f"Error in custom interrupt detection: {e}")
-                        break
-                
-                # Clean up resources
-                interrupt_stream.close()
-                interrupt_pa.terminate()
-                
-            else:
-                # Use Porcupine for wake word detection during speech
-                # Use the wake word as the interrupt keyword with maximum sensitivity
-                keywords = [self.wake_word]
-                
-                # Create a separate Porcupine instance with MAXIMUM sensitivity for wake word detection during speech
+            except Exception as e:
+                print(f"Error creating high-sensitivity detector: {e}")
+                print("Trying with higher sensitivity...")
                 try:
-                    # Use maximum sensitivity (1.0) for immediate detection during speech
-                    sensitivities = [1.0]
+                    # Try with 0.8 sensitivity
+                    sensitivities = [0.8]
                     interrupt_porcupine = pvporcupine.create(
                         access_key=self.porcupine_access_key,
                         keywords=keywords,
                         sensitivities=sensitivities
                     )
-                except Exception as e:
-                    print(f"Error creating high-sensitivity detector: {e}")
-                    print("Trying with higher sensitivity...")
+                except Exception as e2:
+                    print(f"Error with medium sensitivity: {e2}")
+                    print("Falling back to default sensitivity")
                     try:
-                        # Try with 0.8 sensitivity
-                        sensitivities = [0.8]
                         interrupt_porcupine = pvporcupine.create(
                             access_key=self.porcupine_access_key,
-                            keywords=keywords,
-                            sensitivities=sensitivities
+                            keywords=keywords
                         )
-                    except Exception as e2:
-                        print(f"Error with medium sensitivity: {e2}")
-                        print("Falling back to default sensitivity")
-                        try:
-                            interrupt_porcupine = pvporcupine.create(
-                                access_key=self.porcupine_access_key,
-                                keywords=keywords
-                            )
-                        except Exception as e3:
-                            print(f"Error creating interrupt detector: {e3}")
-                            return
-                
-                # Create a separate audio stream with SMALLEST possible buffer for fastest response
-                interrupt_pa = pyaudio.PyAudio()
-                interrupt_stream = interrupt_pa.open(
-                    rate=interrupt_porcupine.sample_rate,
-                    channels=1,
-                    format=pyaudio.paInt16,
-                    input=True,
-                    frames_per_buffer=256  # Smallest possible buffer for immediate response
-                )
-                
-                print(f"IMMEDIATE INTERRUPT DETECTION ACTIVE - Say '{self.wake_word}' to instantly stop speech")
-                
-                # Continue checking for wake word while speaking - with instant response
-                while self.is_speaking and not self.stop_speaking:
-                    try:
-                        pcm = interrupt_stream.read(interrupt_porcupine.frame_length, exception_on_overflow=False)
-                        pcm = struct.unpack_from("h" * interrupt_porcupine.frame_length, pcm)
+                    except Exception as e3:
+                        print(f"Error creating interrupt detector: {e3}")
+                        return
+            
+            # Create a separate audio stream with SMALLEST possible buffer for fastest response
+            interrupt_pa = pyaudio.PyAudio()
+            interrupt_stream = interrupt_pa.open(
+                rate=interrupt_porcupine.sample_rate,
+                channels=1,
+                format=pyaudio.paInt16,
+                input=True,
+                frames_per_buffer=256  # Smallest possible buffer for immediate response
+            )
+            
+            print(f"IMMEDIATE INTERRUPT DETECTION ACTIVE - Say '{self.wake_word}' to instantly stop speech")
+            
+            # Continue checking for wake word while speaking - with instant response
+            while self.is_speaking and not self.stop_speaking:
+                try:
+                    pcm = interrupt_stream.read(interrupt_porcupine.frame_length, exception_on_overflow=False)
+                    pcm = struct.unpack_from("h" * interrupt_porcupine.frame_length, pcm)
+                    
+                    keyword_index = interrupt_porcupine.process(pcm)
+                    if keyword_index >= 0:
+                        # IMMEDIATELY STOP SPEECH - Force stop with multiple methods
+                        print(f"\n!!! WAKE WORD DETECTED - FORCING IMMEDIATE STOP !!!")
                         
-                        keyword_index = interrupt_porcupine.process(pcm)
-                        if keyword_index >= 0:
-                            # IMMEDIATELY STOP SPEECH - Force stop with multiple methods
-                            print(f"\n!!! WAKE WORD DETECTED - FORCING IMMEDIATE STOP !!!")
+                        # Play different beep sound for interruption (higher pitch)
+                        self.play_beep(1500, 150)
+                        
+                        # Set flags to stop speech
+                        self.stop_speaking = True
+                        self.is_speaking = False
+                        
+                        # Try to kill any system audio processes
+                        try:
+                            if platform.system() == 'Windows':
+                                # Kill any audio processes on Windows
+                                os.system("taskkill /f /im wmplayer.exe >nul 2>&1")
+                            elif platform.system() == 'Darwin':  # macOS
+                                os.system("pkill afplay 2>/dev/null")
+                            else:  # Linux
+                                os.system("pkill mpg123 2>/dev/null")
+                        except:
+                            pass
+                        
+                        # Force stop the TTS engine if using fallback
+                        try:
+                            self.tts_engine.stop()
+                        except:
+                            pass
                             
-                            # Play different beep sound for interruption (higher pitch)
-                            self.play_beep(1500, 150)
-                            
-                            # Set flags to stop speech
-                            self.stop_speaking = True
-                            self.is_speaking = False
-                            
-                            # Try to kill any system audio processes
-                            try:
-                                if platform.system() == 'Windows':
-                                    # Kill any audio processes on Windows
-                                    os.system("taskkill /f /im wmplayer.exe >nul 2>&1")
-                                elif platform.system() == 'Darwin':  # macOS
-                                    os.system("pkill afplay 2>/dev/null")
-                                else:  # Linux
-                                    os.system("pkill mpg123 2>/dev/null")
-                            except:
-                                pass
-                            
-                            # Force stop the TTS engine if using fallback
-                            try:
-                                self.tts_engine.stop()
-                            except:
-                                pass
+                        # Visual feedback for interrupt detection (only if show_webcam is True)
+                        if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
+                            _, frame = self.emotion_cap.read()
+                            if frame is not None:
+                                # Clear the entire frame with a flash of red to indicate interruption
+                                overlay = frame.copy()
+                                cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), -1)
+                                cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
                                 
-                            # Visual feedback for interrupt detection (only if show_webcam is True)
-                            if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                                _, frame = self.emotion_cap.read()
-                                if frame is not None:
-                                    # Clear the entire frame with a flash of red to indicate interruption
-                                    overlay = frame.copy()
-                                    cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), -1)
-                                    cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
-                                    
-                                    cv2.putText(
-                                        frame,
-                                        "INTERRUPTED - LISTENING NOW",
-                                        (10, frame.shape[0] - 20),
-                                        cv2.FONT_HERSHEY_SIMPLEX,
-                                        0.8,
-                                        (255, 255, 255),  # White text
-                                        2,
-                                    )
-                                    cv2.imshow("Emotion Detection", frame)
-                                    cv2.waitKey(1)
-                            
-                            # Break immediately to start listening
-                            break
-                    except Exception as e:
-                        print(f"Error in interrupt detection: {e}")
+                                cv2.putText(
+                                    frame,
+                                    "INTERRUPTED - LISTENING NOW",
+                                    (10, frame.shape[0] - 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8,
+                                    (255, 255, 255),  # White text
+                                    2,
+                                )
+                                cv2.imshow("Emotion Detection", frame)
+                                cv2.waitKey(1)
+                        
+                        # Break immediately to start listening
                         break
-                
-                # Clean up resources
-                interrupt_stream.close()
-                interrupt_pa.terminate()
-                interrupt_porcupine.delete()
+                except Exception as e:
+                    print(f"Error in interrupt detection: {e}")
+                    break
+            
+            # Clean up resources
+            interrupt_stream.close()
+            interrupt_pa.terminate()
+            interrupt_porcupine.delete()
             
         except Exception as e:
             print(f"Error setting up interrupt detection: {e}")
@@ -4659,275 +4462,6 @@ class ConversationRobot:
         except Exception as e:
             print(f"❌ Error in Raspberry Pi Arduino scan: {e}")
             return None
-    
-    def setup_custom_wake_word_detection(self):
-        """Set up custom wake word detection using Lemonfox Whisper API"""
-        try:
-            # Prepare keywords list
-            keywords = [self.wake_word.lower()]
-            
-            # Add custom wake words if any
-            for word in self.custom_wake_words:
-                if word.lower() not in keywords:
-                    keywords.append(word.lower())
-            
-            # Update all_wake_words list
-            self.all_wake_words = keywords
-            
-            # Map indices to wake words (for compatibility with existing code)
-            self.wake_word_indices = {i: word for i, word in enumerate(keywords)}
-            
-            print(f"Setting up custom wake word detection with keywords: {keywords}")
-            
-            # Initialize audio stream for recording
-            self.pa = pyaudio.PyAudio()
-            
-            # Sample rate and frame length for audio recording
-            self.sample_rate = 16000  # 16kHz is standard for speech recognition
-            self.frame_length = 1024  # Smaller frame size for faster processing
-            
-            # Enhanced settings for better wake word detection
-            self.detection_threshold = 0.6  # Confidence threshold for phonetic matching
-            self.detection_window = 3  # Number of consecutive attempts to check for wake word
-            self.detection_history = []  # Store recent transcriptions for context
-            self.detection_sensitivity = "high"  # Set to high sensitivity for "lumo"
-            
-            # Configure audio stream with higher quality settings
-            self.audio_stream = self.pa.open(
-                rate=self.sample_rate,
-                channels=1,
-                format=pyaudio.paInt16,
-                input=True,
-                frames_per_buffer=self.frame_length
-            )
-            
-            print(f"Custom wake word detection set up with primary wake word: '{self.wake_word}'")
-            if len(keywords) > 1:
-                print(f"Additional wake words: {', '.join(keywords[1:])}")
-            
-            print(f"Wake word detection sensitivity set to: {self.detection_sensitivity}")
-            print("Enhanced wake word detection active with phonetic matching and partial word recognition")
-            
-            return True
-        except Exception as e:
-            print(f"Error setting up custom wake word detection: {e}")
-            return False
-    
-    def listen_for_custom_wake_word(self):
-        """Listen for wake word using Lemonfox Whisper API and return True when detected"""
-        wake_words_str = ", ".join([f"'{word}'" for word in self.all_wake_words])
-        print(f"Listening for wake words: {wake_words_str}...")
-        
-        # For faster response, use smaller buffer and process in chunks
-        try:
-            # Show visual indicator that system is ready (only if show_webcam is True)
-            if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                # Display a small indicator in the emotion detection window
-                _, frame = self.emotion_cap.read()
-                if frame is not None:
-                    # Add "Listening for wake word" text at the bottom
-                    cv2.putText(
-                        frame,
-                        f"Listening for wake words...",
-                        (10, frame.shape[0] - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (0, 255, 255),
-                        2,
-                    )
-                    cv2.imshow("Emotion Detection", frame)
-                    cv2.waitKey(1)
-            
-            # Record audio for a short duration (1.5 seconds)
-            print("Recording audio snippet for wake word detection...")
-            audio_frames = []
-            
-            # Record for 1.5 seconds
-            record_seconds = 1.5
-            for _ in range(0, int(self.sample_rate / self.frame_length * record_seconds)):
-                data = self.audio_stream.read(self.frame_length, exception_on_overflow=False)
-                audio_frames.append(data)
-            
-            # Convert audio frames to a WAV file
-            audio_data = b''.join(audio_frames)
-            
-            # Save audio to temporary file for API upload
-            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-            temp_audio_path = temp_audio_file.name
-            temp_audio_file.close()
-            
-            # Create WAV file with the recorded audio
-            with wave.open(temp_audio_path, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # 2 bytes = 16 bits
-                wf.setframerate(self.sample_rate)
-                wf.writeframes(audio_data)
-            
-            # Prepare API request to Lemonfox
-            url = "https://api.lemonfox.ai/v1/audio/transcriptions"
-            headers = {
-                "Authorization": f"Bearer {self.lemonfox_api_key}"
-            }
-            data = {
-                "language": "english",
-                "response_format": "json"
-            }
-            
-            # Open the file for upload
-            files = {
-                "file": open(temp_audio_path, "rb")
-            }
-            
-            # Send request to Lemonfox API
-            response = requests.post(url, headers=headers, files=files, data=data)
-            
-            # Clean up temp file
-            files["file"].close()
-            os.unlink(temp_audio_path)
-            
-            # Check response
-            if response.status_code == 200:
-                result = response.json()
-                if "text" in result:
-                    transcription = result["text"].strip().lower()
-                    print(f"Transcription: {transcription}")
-                    
-                    # Enhanced wake word detection with multiple methods
-                    
-                    # Method 1: Direct substring match (most reliable)
-                    for i, wake_word in enumerate(self.all_wake_words):
-                        if wake_word.lower() in transcription.lower():
-                            print(f"Wake word detected (direct match): '{wake_word}'!")
-                            self._trigger_wake_word_detected(wake_word)
-                            return True
-                    
-                    # Method 2: Check for partial matches of "lumo" with higher sensitivity
-                    # This helps catch cases where the API might transcribe it slightly differently
-                    lumo_variations = ["lumo", "lomo", "lumu", "lomu", "lum", "lomo", "lum o", "lu mo"]
-                    for variation in lumo_variations:
-                        # Special handling for the primary wake word with higher sensitivity
-                        # Check if any part of the transcription contains the variation
-                        words = transcription.lower().split()
-                        for word in words:
-                            # Check for close matches (e.g., "lummo", "lumi", "lumo", etc.)
-                            if self._is_similar_to_lumo(word):
-                                print(f"Wake word detected (similar match): '{word}' matches 'lumo'!")
-                                self._trigger_wake_word_detected("lumo")
-                                return True
-                    
-                    # Method 3: Check for phonetic similarity to "lumo"
-                    # This helps with accents and slight pronunciation differences
-                    if self._has_phonetic_match_to_lumo(transcription):
-                        print(f"Wake word detected (phonetic match): '{transcription}' sounds like 'lumo'!")
-                        self._trigger_wake_word_detected("lumo")
-                        return True
-            
-            # Process any pending UI events to keep the UI responsive (only if show_webcam is True)
-            if self.use_emotion_detection and self.show_webcam:
-                cv2.waitKey(1)
-                
-            # No wake word detected
-            return False
-            
-        except KeyboardInterrupt:
-            print("Stopping wake word detection.")
-            return False
-        except Exception as e:
-            print(f"Error in custom wake word detection: {e}")
-            return False
-    
-    def _trigger_wake_word_detected(self, wake_word):
-        """Helper method to handle wake word detection actions"""
-        # Play beep sound to indicate wake word detection
-        if self.enable_beep:
-            print("Playing wake word detection beep...")
-            self.play_beep(1200, 200)  # Higher pitch for wake word detection
-        
-        # Visual feedback (only if show_webcam is True)
-        if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-            _, frame = self.emotion_cap.read()
-            if frame is not None:
-                # Add "Wake word detected!" text
-                cv2.putText(
-                    frame,
-                    f"Wake word detected: '{wake_word}'!",
-                    (10, frame.shape[0] - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                )
-                cv2.imshow("Emotion Detection", frame)
-                cv2.waitKey(1)
-    
-    def _is_similar_to_lumo(self, word):
-        """Check if a word is similar to 'lumo' using string similarity"""
-        # Direct match for any of our wake words
-        if word in ["lumo", "lomo", "lumu", "lomu"]:
-            return True
-            
-        # Check for common variations
-        if word in ["lummo", "lumi", "lume", "luma", "luno", "lupo", "ludo", 
-                   "lum", "lumon", "lemos", "limos", "lomos", "lumos"]:
-            return True
-            
-        # Check for edit distance (Levenshtein distance)
-        # Simple implementation for close matches
-        lumo = "lumo"
-        if len(word) >= 3 and len(word) <= 6:  # Reasonable length for a wake word
-            # Count matching characters in sequence
-            matches = 0
-            for i in range(min(len(word), len(lumo))):
-                if word[i] == lumo[i]:
-                    matches += 1
-            
-            # If at least 2 characters match in sequence at the beginning, consider it similar
-            if matches >= 2 and word.startswith("l"):
-                return True
-                
-            # Check for "l" + vowel + "m" pattern which is the core of "lumo"
-            if len(word) >= 3 and word[0] == "l" and word[1] in "aeiou" and "m" in word[2:]:
-                return True
-        
-        return False
-    
-    def _has_phonetic_match_to_lumo(self, transcription):
-        """Check for phonetic similarity to 'lumo' in the transcription"""
-        # Split transcription into words
-        words = transcription.lower().split()
-        
-        # Check each word for phonetic similarity
-        for word in words:
-            # Check for "l" sound followed by vowel sound followed by "m" sound
-            if len(word) >= 3:
-                # Look for patterns that sound like "lumo" phonetically
-                patterns = [
-                    "l[aeiou]m",       # Basic pattern: l + vowel + m
-                    "l[aeiou][mn]",    # l + vowel + m or n (similar sound)
-                    "[lr][aeiou]m",    # l or r (similar sound) + vowel + m
-                    "l[aeiou].*m",     # l + vowel + any chars + m
-                    "bl[aeiou]m",      # bl + vowel + m (e.g., "bloom" contains "loom")
-                    "fl[aeiou]m",      # fl + vowel + m
-                    "gl[aeiou]m",      # gl + vowel + m
-                ]
-                
-                import re
-                for pattern in patterns:
-                    if re.search(pattern, word):
-                        # If the word is short (likely to be a command word), consider it a match
-                        if len(word) <= 6:
-                            return True
-        
-        # Also check for specific words that might be misrecognized as "lumo"
-        similar_words = ["loom", "bloom", "plume", "flume", "gloom", "lumen", "luma", 
-                        "limo", "lemon", "limo", "loom", "lume", "lunar", "loomis",
-                        "luminous", "illuminate", "aluminum", "volume", "column"]
-        
-        for word in words:
-            if word in similar_words:
-                return True
-                
-        return False
 
 
 # External functions outside the ConversationRobot class
@@ -5045,12 +4579,12 @@ def check_env_file():
     if not env_file_valid:
         print("Setting required environment variables directly...")
         # Set essential environment variables
-        os.environ["USE_CUSTOM_WAKE_WORD"] = "true"  # Use our custom wake word detection instead of Porcupine
+        os.environ["PORCUPINE_ACCESS_KEY"] = "qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag=="
         os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
         os.environ["ELEVENLABS_API_KEY"] = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
         os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
-        os.environ["WAKE_WORD"] ="LUMO"
-        os.environ["CUSTOM_WAKE_WORDS"] = "lumo,lomo,lumu,lomu,LUMO"
+        os.environ["WAKE_WORD"] = "alexa"
+        os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
         os.environ["SAVE_HISTORY"] = "true"
         os.environ["ENABLE_BEEP"] = "true"
         os.environ["USE_MEMORY"] = "true"
@@ -5074,14 +4608,14 @@ def check_env_file():
         try:
             with open(".env", "w", encoding="utf-8") as f:
                 f.write("""# API Keys
-USE_CUSTOM_WAKE_WORD=true
+PORCUPINE_ACCESS_KEY=qqlP6xCMkzy3yWVx9Wg3RDsATOG1d06E1KAgbFilHWeoAl3zcIjkag==
 GEMINI_API_KEY=AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8
 ELEVENLABS_API_KEY=sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 
 # Wake word settings
-WAKE_WORD=LUMO
-CUSTOM_WAKE_WORDS=lumo,lomo,lumu,lomu,LUMO
+WAKE_WORD=alexa
+CUSTOM_WAKE_WORDS=jarvis,computer,hey google
 
 # Memory settings
 USE_MEMORY=true
@@ -5113,15 +4647,12 @@ PROCESS_EVERY_N_FRAMES=15
             print(f"Could not create new .env file: {e}")
             print("Using environment variables from code instead.")
     
-    # Check if using custom wake word detection
-    use_custom_wake_word = os.environ.get("USE_CUSTOM_WAKE_WORD", "true").lower() == "true"
-    
-    # Check if Lemonfox API key is set (needed for custom wake word detection)
-    lemonfox_api_key = os.environ.get("LEMONFOX_API_KEY")
-    if use_custom_wake_word and (not lemonfox_api_key or lemonfox_api_key == ""):
-        print("\nERROR: Lemonfox API key is not set correctly.")
-        print("This is required for the custom wake word detection.")
-        print("Set it in your .env file as LEMONFOX_API_KEY=your_key_here\n")
+    # Check if Porcupine access key is set
+    porcupine_key = os.environ.get("PORCUPINE_ACCESS_KEY")
+    if not porcupine_key or porcupine_key == "" or "your_porcupine_access_key_here" in porcupine_key:
+        print("\nERROR: Porcupine access key is not set correctly.")
+        print("You need to get a free access key from https://console.picovoice.ai/")
+        print("Then set it in your .env file as PORCUPINE_ACCESS_KEY=your_key_here\n")
         return False
     
     return True
