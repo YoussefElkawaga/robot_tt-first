@@ -44,7 +44,7 @@ os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
 os.environ["ELEVENLABS_API_KEY"] = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
 os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
 os.environ["WAKE_WORD"] = "LUMO"
-os.environ["CUSTOM_WAKE_WORDS"] = "lumo", "lomo", "lumu", "lomu", "LUMO"
+os.environ["CUSTOM_WAKE_WORDS"] = "lumo,lomo,lumu,lomu,LUMO"
 os.environ["SAVE_HISTORY"] = "true"
 os.environ["ENABLE_BEEP"] = "true"
 os.environ["USE_MEMORY"] = "true"
@@ -4588,7 +4588,7 @@ def check_env_file():
         os.environ["ELEVENLABS_API_KEY"] = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
         os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
         os.environ["WAKE_WORD"] ="LUMO"
-        os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
+        os.environ["CUSTOM_WAKE_WORDS"] = "lumo,lomo,lumu,lomu,LUMO"
         os.environ["SAVE_HISTORY"] = "true"
         os.environ["ENABLE_BEEP"] = "true"
         os.environ["USE_MEMORY"] = "true"
@@ -4619,7 +4619,7 @@ ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 
 # Wake word settings
 WAKE_WORD=LUMO
-CUSTOM_WAKE_WORDS=jarvis,computer,hey google
+CUSTOM_WAKE_WORDS=lumo,lomo,lumu,lomu,LUMO
 
 # Memory settings
 USE_MEMORY=true
