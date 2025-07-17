@@ -91,4 +91,4 @@ if __name__ == "__main__":
         send_arduino_command(command, port)
     else:
         print("Usage: python serial.py <command> [port]")
-        print("Example: python serial.py 'shake_hand' '/dev/ttyACM0'")\
+        print("Example: python serial.py 'shake_hand' '/dev/ttyACM0'")
