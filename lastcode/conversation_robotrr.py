@@ -2011,61 +2011,88 @@ class ConversationRobot:
                             result = response.json()
                             if "text" in result:
                                 transcription = result["text"].strip().lower()
+                                print(f"Interrupt check transcription: {transcription}")
                                 
-                                # Check if any wake word is in the transcription
+                                # Enhanced wake word detection with multiple methods
+                                wake_word_detected = False
+                                detected_word = None
+                                
+                                # Method 1: Direct substring match
                                 for wake_word in self.all_wake_words:
                                     if wake_word.lower() in transcription.lower():
-                                        # IMMEDIATELY STOP SPEECH - Force stop with multiple methods
-                                        print(f"\n!!! WAKE WORD DETECTED - FORCING IMMEDIATE STOP !!!")
-                                        
-                                        # Play different beep sound for interruption (higher pitch)
-                                        self.play_beep(1500, 150)
-                                        
-                                        # Set flags to stop speech
-                                        self.stop_speaking = True
-                                        self.is_speaking = False
-                                        
-                                        # Try to kill any system audio processes
-                                        try:
-                                            if platform.system() == 'Windows':
-                                                # Kill any audio processes on Windows
-                                                os.system("taskkill /f /im wmplayer.exe >nul 2>&1")
-                                            elif platform.system() == 'Darwin':  # macOS
-                                                os.system("pkill afplay 2>/dev/null")
-                                            else:  # Linux
-                                                os.system("pkill mpg123 2>/dev/null")
-                                        except:
-                                            pass
-                                        
-                                        # Force stop the TTS engine if using fallback
-                                        try:
-                                            self.tts_engine.stop()
-                                        except:
-                                            pass
-                                            
-                                        # Visual feedback for interrupt detection (only if show_webcam is True)
-                                        if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                                            _, frame = self.emotion_cap.read()
-                                            if frame is not None:
-                                                # Clear the entire frame with a flash of red to indicate interruption
-                                                overlay = frame.copy()
-                                                cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), -1)
-                                                cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
-                                                
-                                                cv2.putText(
-                                                    frame,
-                                                    "INTERRUPTED - LISTENING NOW",
-                                                    (10, frame.shape[0] - 20),
-                                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                                    0.8,
-                                                    (255, 255, 255),  # White text
-                                                    2,
-                                                )
-                                                cv2.imshow("Emotion Detection", frame)
-                                                cv2.waitKey(1)
-                                        
-                                        # Break immediately to start listening
+                                        wake_word_detected = True
+                                        detected_word = wake_word
+                                        print(f"Wake word detected (direct match): '{wake_word}'!")
                                         break
+                                
+                                # Method 2: Check for partial matches of "lumo" with higher sensitivity
+                                if not wake_word_detected:
+                                    words = transcription.lower().split()
+                                    for word in words:
+                                        if self._is_similar_to_lumo(word):
+                                            wake_word_detected = True
+                                            detected_word = "lumo"
+                                            print(f"Wake word detected (similar match): '{word}' matches 'lumo'!")
+                                            break
+                                
+                                # Method 3: Check for phonetic similarity to "lumo"
+                                if not wake_word_detected and self._has_phonetic_match_to_lumo(transcription):
+                                    wake_word_detected = True
+                                    detected_word = "lumo"
+                                    print(f"Wake word detected (phonetic match): '{transcription}' sounds like 'lumo'!")
+                                
+                                if wake_word_detected:
+                                    # IMMEDIATELY STOP SPEECH - Force stop with multiple methods
+                                    print(f"\n!!! WAKE WORD '{detected_word}' DETECTED - FORCING IMMEDIATE STOP !!!")
+                                    
+                                    # Play different beep sound for interruption (higher pitch)
+                                    self.play_beep(1500, 150)
+                                    
+                                    # Set flags to stop speech
+                                    self.stop_speaking = True
+                                    self.is_speaking = False
+                                    
+                                    # Try to kill any system audio processes
+                                    try:
+                                        if platform.system() == 'Windows':
+                                            # Kill any audio processes on Windows
+                                            os.system("taskkill /f /im wmplayer.exe >nul 2>&1")
+                                        elif platform.system() == 'Darwin':  # macOS
+                                            os.system("pkill afplay 2>/dev/null")
+                                        else:  # Linux
+                                            os.system("pkill mpg123 2>/dev/null")
+                                    except:
+                                        pass
+                                    
+                                    # Force stop the TTS engine if using fallback
+                                    try:
+                                        self.tts_engine.stop()
+                                    except:
+                                        pass
+                                            
+                                    # Visual feedback for interrupt detection (only if show_webcam is True)
+                                    if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
+                                        _, frame = self.emotion_cap.read()
+                                        if frame is not None:
+                                            # Clear the entire frame with a flash of red to indicate interruption
+                                            overlay = frame.copy()
+                                            cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), -1)
+                                            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+                                            
+                                            cv2.putText(
+                                                frame,
+                                                "INTERRUPTED - LISTENING NOW",
+                                                (10, frame.shape[0] - 20),
+                                                cv2.FONT_HERSHEY_SIMPLEX,
+                                                0.8,
+                                                (255, 255, 255),  # White text
+                                                2,
+                                            )
+                                            cv2.imshow("Emotion Detection", frame)
+                                            cv2.waitKey(1)
+                                    
+                                    # Break immediately to start listening
+                                    break
                     except Exception as e:
                         print(f"Error in custom interrupt detection: {e}")
                         break
@@ -4659,6 +4686,13 @@ class ConversationRobot:
             self.sample_rate = 16000  # 16kHz is standard for speech recognition
             self.frame_length = 1024  # Smaller frame size for faster processing
             
+            # Enhanced settings for better wake word detection
+            self.detection_threshold = 0.6  # Confidence threshold for phonetic matching
+            self.detection_window = 3  # Number of consecutive attempts to check for wake word
+            self.detection_history = []  # Store recent transcriptions for context
+            self.detection_sensitivity = "high"  # Set to high sensitivity for "lumo"
+            
+            # Configure audio stream with higher quality settings
             self.audio_stream = self.pa.open(
                 rate=self.sample_rate,
                 channels=1,
@@ -4670,6 +4704,9 @@ class ConversationRobot:
             print(f"Custom wake word detection set up with primary wake word: '{self.wake_word}'")
             if len(keywords) > 1:
                 print(f"Additional wake words: {', '.join(keywords[1:])}")
+            
+            print(f"Wake word detection sensitivity set to: {self.detection_sensitivity}")
+            print("Enhanced wake word detection active with phonetic matching and partial word recognition")
             
             return True
         except Exception as e:
@@ -4755,33 +4792,35 @@ class ConversationRobot:
                     transcription = result["text"].strip().lower()
                     print(f"Transcription: {transcription}")
                     
-                    # Check if any wake word is in the transcription
+                    # Enhanced wake word detection with multiple methods
+                    
+                    # Method 1: Direct substring match (most reliable)
                     for i, wake_word in enumerate(self.all_wake_words):
                         if wake_word.lower() in transcription.lower():
-                            print(f"Wake word detected: '{wake_word}'!")
-                            
-                            # Play beep sound to indicate wake word detection
-                            if self.enable_beep:
-                                print("Playing wake word detection beep...")
-                                self.play_beep(1200, 200)  # Higher pitch for wake word detection
-                            
-                            # Visual feedback (only if show_webcam is True)
-                            if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
-                                _, frame = self.emotion_cap.read()
-                                if frame is not None:
-                                    # Add "Wake word detected!" text
-                                    cv2.putText(
-                                        frame,
-                                        f"Wake word detected: '{wake_word}'!",
-                                        (10, frame.shape[0] - 20),
-                                        cv2.FONT_HERSHEY_SIMPLEX,
-                                        0.7,
-                                        (0, 255, 0),
-                                        2,
-                                    )
-                                    cv2.imshow("Emotion Detection", frame)
-                                    cv2.waitKey(1)
+                            print(f"Wake word detected (direct match): '{wake_word}'!")
+                            self._trigger_wake_word_detected(wake_word)
                             return True
+                    
+                    # Method 2: Check for partial matches of "lumo" with higher sensitivity
+                    # This helps catch cases where the API might transcribe it slightly differently
+                    lumo_variations = ["lumo", "lomo", "lumu", "lomu", "lum", "lomo", "lum o", "lu mo"]
+                    for variation in lumo_variations:
+                        # Special handling for the primary wake word with higher sensitivity
+                        # Check if any part of the transcription contains the variation
+                        words = transcription.lower().split()
+                        for word in words:
+                            # Check for close matches (e.g., "lummo", "lumi", "lumo", etc.)
+                            if self._is_similar_to_lumo(word):
+                                print(f"Wake word detected (similar match): '{word}' matches 'lumo'!")
+                                self._trigger_wake_word_detected("lumo")
+                                return True
+                    
+                    # Method 3: Check for phonetic similarity to "lumo"
+                    # This helps with accents and slight pronunciation differences
+                    if self._has_phonetic_match_to_lumo(transcription):
+                        print(f"Wake word detected (phonetic match): '{transcription}' sounds like 'lumo'!")
+                        self._trigger_wake_word_detected("lumo")
+                        return True
             
             # Process any pending UI events to keep the UI responsive (only if show_webcam is True)
             if self.use_emotion_detection and self.show_webcam:
@@ -4796,6 +4835,99 @@ class ConversationRobot:
         except Exception as e:
             print(f"Error in custom wake word detection: {e}")
             return False
+    
+    def _trigger_wake_word_detected(self, wake_word):
+        """Helper method to handle wake word detection actions"""
+        # Play beep sound to indicate wake word detection
+        if self.enable_beep:
+            print("Playing wake word detection beep...")
+            self.play_beep(1200, 200)  # Higher pitch for wake word detection
+        
+        # Visual feedback (only if show_webcam is True)
+        if self.use_emotion_detection and self.show_webcam and self.emotion_cap and self.emotion_cap.isOpened():
+            _, frame = self.emotion_cap.read()
+            if frame is not None:
+                # Add "Wake word detected!" text
+                cv2.putText(
+                    frame,
+                    f"Wake word detected: '{wake_word}'!",
+                    (10, frame.shape[0] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
+                cv2.imshow("Emotion Detection", frame)
+                cv2.waitKey(1)
+    
+    def _is_similar_to_lumo(self, word):
+        """Check if a word is similar to 'lumo' using string similarity"""
+        # Direct match for any of our wake words
+        if word in ["lumo", "lomo", "lumu", "lomu"]:
+            return True
+            
+        # Check for common variations
+        if word in ["lummo", "lumi", "lume", "luma", "luno", "lupo", "ludo", 
+                   "lum", "lumon", "lemos", "limos", "lomos", "lumos"]:
+            return True
+            
+        # Check for edit distance (Levenshtein distance)
+        # Simple implementation for close matches
+        lumo = "lumo"
+        if len(word) >= 3 and len(word) <= 6:  # Reasonable length for a wake word
+            # Count matching characters in sequence
+            matches = 0
+            for i in range(min(len(word), len(lumo))):
+                if word[i] == lumo[i]:
+                    matches += 1
+            
+            # If at least 2 characters match in sequence at the beginning, consider it similar
+            if matches >= 2 and word.startswith("l"):
+                return True
+                
+            # Check for "l" + vowel + "m" pattern which is the core of "lumo"
+            if len(word) >= 3 and word[0] == "l" and word[1] in "aeiou" and "m" in word[2:]:
+                return True
+        
+        return False
+    
+    def _has_phonetic_match_to_lumo(self, transcription):
+        """Check for phonetic similarity to 'lumo' in the transcription"""
+        # Split transcription into words
+        words = transcription.lower().split()
+        
+        # Check each word for phonetic similarity
+        for word in words:
+            # Check for "l" sound followed by vowel sound followed by "m" sound
+            if len(word) >= 3:
+                # Look for patterns that sound like "lumo" phonetically
+                patterns = [
+                    "l[aeiou]m",       # Basic pattern: l + vowel + m
+                    "l[aeiou][mn]",    # l + vowel + m or n (similar sound)
+                    "[lr][aeiou]m",    # l or r (similar sound) + vowel + m
+                    "l[aeiou].*m",     # l + vowel + any chars + m
+                    "bl[aeiou]m",      # bl + vowel + m (e.g., "bloom" contains "loom")
+                    "fl[aeiou]m",      # fl + vowel + m
+                    "gl[aeiou]m",      # gl + vowel + m
+                ]
+                
+                import re
+                for pattern in patterns:
+                    if re.search(pattern, word):
+                        # If the word is short (likely to be a command word), consider it a match
+                        if len(word) <= 6:
+                            return True
+        
+        # Also check for specific words that might be misrecognized as "lumo"
+        similar_words = ["loom", "bloom", "plume", "flume", "gloom", "lumen", "luma", 
+                        "limo", "lemon", "limo", "loom", "lume", "lunar", "loomis",
+                        "luminous", "illuminate", "aluminum", "volume", "column"]
+        
+        for word in words:
+            if word in similar_words:
+                return True
+                
+        return False
 
 
 # External functions outside the ConversationRobot class
