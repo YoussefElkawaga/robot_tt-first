@@ -21,18 +21,19 @@ import requests
 import tempfile
 import serial  # Add import for serial communication
 import io  # For handling byte streams with Lemonfox API
+from gtts import gTTS  # Import Google Text-to-Speech
 
-# Import ElevenLabs client
+# No need for ElevenLabs client anymore, using gTTS instead
+
+# Try to import gTTS if not already imported
 try:
-    from elevenlabs.client import ElevenLabs
-    ELEVENLABS_CLIENT_AVAILABLE = True
+    from gtts import gTTS
 except ImportError:
-    print("ElevenLabs client library not found. Installing...")
+    print("gTTS library not found. Installing...")
     import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "elevenlabs"])
-    from elevenlabs.client import ElevenLabs
-    ELEVENLABS_CLIENT_AVAILABLE = True
-    print("ElevenLabs client library installed successfully.")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "gtts"])
+    from gtts import gTTS
+    print("gTTS library installed successfully.")
 
 # Set default Arduino port based on platform
 DEFAULT_ARDUINO_PORT = "COM3" if platform.system() == "Windows" else "/dev/ttyACM0"
@@ -41,8 +42,8 @@ DEFAULT_ARDUINO_PORT = "COM3" if platform.system() == "Windows" else "/dev/ttyAC
 # This ensures the script works even if the .env file has issues
 os.environ["PORCUPINE_ACCESS_KEY"] = "NmPe6ZpjhI+7CuR5gR7DlZMHNFZZ5Jks2sqiINUl3yCCAF/QdCn51A=="
 os.environ["GEMINI_API_KEY"] = "AIzaSyBuFAaIvXFRRX_LfAaTFnVTFFva-eV2Zw8"
-os.environ["ELEVENLABS_API_KEY"] = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
-os.environ["ELEVENLABS_VOICE_ID"] = "21m00Tcm4TlvDq8ikWAM"
+os.environ["TTS_LANGUAGE"] = "en"
+os.environ["TTS_SLOW"] = "false"
 os.environ["WAKE_WORD"] = "alexa"
 os.environ["CUSTOM_WAKE_WORDS"] = "jarvis,computer,hey google"
 os.environ["SAVE_HISTORY"] = "true"
@@ -190,31 +191,29 @@ class ConversationRobot:
             self.tts_engine = None
             self.has_fallback_tts = False
             
-        # Initialize ElevenLabs TTS
-        self.elevenlabs_api_key = self._parse_env_str("ELEVENLABS_API_KEY", "")
-        if not self.elevenlabs_api_key and "ELEVENLABS_API_KEY" in os.environ:
-            self.elevenlabs_api_key = os.environ["ELEVENLABS_API_KEY"]
-        if not self.elevenlabs_api_key:
-            # Use the provided API key from the environment variables
-            self.elevenlabs_api_key = "sk_57580b4b142606a6e53249d0a3b105fe4ada6a1ae68f6b2b"
-            print("Using environment variable ElevenLabs API key")
-            
-        self.elevenlabs_voice_id = self._parse_env_str("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-        self.elevenlabs_model_id = self._parse_env_str("ELEVENLABS_MODEL_ID", "eleven_monolingual_v1")
-        self.elevenlabs_voices = []
-        self.use_elevenlabs = True
-        self.elevenlabs_failed = False
+        # Initialize Google TTS
+        print("Initializing Google Text-to-Speech (gTTS)")
+        self.use_google_tts = True
+        self.google_tts_failed = False
         self.audio_player = None
         
-        # Try to initialize the ElevenLabs client right away to check if the API key works
+        # Set language for gTTS (default to English)
+        self.tts_language = self._parse_env_str("TTS_LANGUAGE", "en")
+        print(f"Using language '{self.tts_language}' for Google TTS")
+        
+        # Optional slow speaking rate
+        self.tts_slow = self._parse_env_bool("TTS_SLOW", False)
+        if self.tts_slow:
+            print("Using slower speaking rate for Google TTS")
+            
+        # Try to initialize gTTS with a simple test
         try:
-            print(f"Initializing ElevenLabs with API key: {self.elevenlabs_api_key[:5]}...{self.elevenlabs_api_key[-5:]}")
-            from elevenlabs import set_api_key
-            set_api_key(self.elevenlabs_api_key)
-            print("ElevenLabs API key set successfully")
+            print("Testing Google TTS initialization...")
+            test_tts = gTTS(text="Test", lang=self.tts_language, slow=self.tts_slow)
+            print("Google TTS initialized successfully")
         except Exception as e:
-            print(f"Note: Could not set ElevenLabs API key: {e}")
-            print("Will verify API key when needed")
+            print(f"Warning: Could not initialize Google TTS: {e}")
+            print("Will try again when needed")
         
         # Add flag to control speech interruption
         self.is_speaking = False
@@ -1574,8 +1573,8 @@ class ConversationRobot:
                         print("Still no emotion data available")
             
             # Create a specialized system prompt for interacting with autistic children
-            system_prompt = 
-            """You are Lumo, an advanced therapeutic robot companion specifically designed to support autistic children. You combine clinical expertise with warmth and understanding to create a safe, supportive environment.
+            system_prompt = """
+            You are Lumo, an advanced therapeutic robot companion specifically designed to support autistic children. You combine clinical expertise with warmth and understanding to create a safe, supportive environment.
 
             IDENTITY & PROFESSIONAL CAPABILITIES:
             - You are Lumo, a friendly robot assistant with expertise in child development and autism support
@@ -1642,6 +1641,7 @@ class ConversationRobot:
             
             As Lumo, your primary mission is to create a supportive, understanding environment where autistic children can feel accepted, develop skills at their own pace, and experience the joy of meaningful connection. Always prioritize the child's emotional wellbeing, dignity, and autonomy in every interaction.
             """
+            
             # Add system prompt to the chat session if it's a new session
             if not self.chat_session.history:
                 self.chat_session.send_message(system_prompt)
@@ -2086,9 +2086,9 @@ class ConversationRobot:
             self.interrupt_thread.daemon = True
             self.interrupt_thread.start()
             
-            # Generate speech for the entire text at once using ElevenLabs
-            print("Generating speech with ElevenLabs for the entire response...")
-            audio_data = self.elevenlabs_tts(processed_text)
+            # Generate speech for the entire text at once using Google TTS
+            print("Generating speech with Google TTS for the entire response...")
+            audio_data = self.google_tts(processed_text)
             
             # Play the audio with interrupt capability
             if audio_data:
@@ -2101,8 +2101,8 @@ class ConversationRobot:
                 while self.is_speaking and not self.stop_speaking:
                     time.sleep(0.1)
             else:
-                # Fallback to pyttsx3 if ElevenLabs failed
-                print("ElevenLabs TTS failed, using fallback TTS...")
+                # Fallback to pyttsx3 if Google TTS failed
+                print("Google TTS failed, using fallback TTS...")
                 self.tts_engine.say(processed_text)
                 self.tts_engine.runAndWait()
             
@@ -2372,13 +2372,13 @@ class ConversationRobot:
             print("Failed to set up wake word detection. Exiting.")
             return
         
-        # Verify ElevenLabs API key
-        print("\nVerifying ElevenLabs API access...")
-        elevenlabs_works = self.verify_elevenlabs_api()
-        if elevenlabs_works:
-            print("✅ ElevenLabs API is working correctly")
-        else:
-            print("⚠️ ElevenLabs API verification failed - will use fallback TTS system")
+                    # Verify Google TTS functionality
+            print("\nVerifying Google TTS functionality...")
+            google_tts_works = self.verify_google_tts()
+            if google_tts_works:
+                print("✅ Google TTS is working correctly")
+            else:
+                print("⚠️ Google TTS verification failed - will use fallback TTS system")
             
         # Verify Lemonfox API key
         print("\nVerifying Lemonfox Whisper API access...")
@@ -2629,291 +2629,95 @@ class ConversationRobot:
             
             self.cleanup()
     
-    def verify_elevenlabs_api(self):
-        """Verify that the ElevenLabs API key is valid and has the right permissions"""
+    def verify_google_tts(self):
+        """Verify that Google TTS is working properly"""
         try:
-            print("Verifying ElevenLabs API key...")
+            print("Verifying Google TTS functionality...")
             
-            # Try multiple endpoints to verify the API key
-            import requests
+            # Create a simple test message
+            test_message = "This is a test of the Google Text-to-Speech system."
             
-            # Properly formatted headers according to ElevenLabs docs
-            headers = {
-                "xi-api-key": self.elevenlabs_api_key
-            }
-            
-            # First try the voices endpoint which should work for all accounts
-            url = "https://api.elevenlabs.io/v1/voices"
-            
-            print("Testing ElevenLabs API with voices endpoint...")
-            response = requests.get(url, headers=headers)
-            
-            if response.status_code == 200:
-                print("✅ ElevenLabs API key verified successfully with voices endpoint")
-                # Reset the failed flag since the key is working
-                self.elevenlabs_failed = False
+            # Try to generate speech with gTTS
+            try:
+                # Create a temporary file for testing
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                    temp_file_path = temp_file.name
                 
-                # Get available voices for the account
-                try:
-                    voices_data = response.json()
-                    if "voices" in voices_data:
-                        voices = voices_data["voices"]
-                        if voices:
-                            print(f"✅ Found {len(voices)} voices available for your account")
-                            # Store the voices for later use
-                            self.elevenlabs_voices = voices
-                except Exception as e:
-                    print(f"⚠️ Error parsing voices response: {e}")
+                # Create gTTS object with the test text
+                tts = gTTS(text=test_message, lang='en', slow=False)
                 
-                return True
-            else:
-                print(f"⚠️ ElevenLabs voices endpoint test failed: Status {response.status_code}")
+                # Save to the temporary file
+                tts.save(temp_file_path)
                 
-                # Try models endpoint as fallback
-                url = "https://api.elevenlabs.io/v1/models"
-                print("Trying models endpoint as fallback...")
-                response = requests.get(url, headers=headers)
-                
-                if response.status_code == 200:
-                    print("✅ ElevenLabs API key verified successfully with models endpoint")
-                    self.elevenlabs_failed = False
+                # Check if the file exists and has content
+                if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 1000:
+                    print("✅ Google TTS is working properly")
+                    
+                    # Clean up the temporary file
+                    try:
+                        os.unlink(temp_file_path)
+                    except:
+                        pass
+                        
                     return True
                 else:
-                    print(f"⚠️ ElevenLabs models endpoint test failed: Status {response.status_code}")
+                    print("⚠️ Google TTS test produced a suspiciously small file")
+                    return False
                     
-                    # Try user info endpoint as last resort
-                    url = "https://api.elevenlabs.io/v1/user"
-                    print("Trying user endpoint as last resort...")
-                    response = requests.get(url, headers=headers)
-                    
-                    if response.status_code == 200:
-                        print("✅ ElevenLabs API key verified successfully with user endpoint")
-                        self.elevenlabs_failed = False
-                        return True
-                    else:
-                        print(f"⚠️ All ElevenLabs API tests failed: Status {response.status_code}")
-                        print(f"Response: {response.text}")
-                        
-                        # If unauthorized on all endpoints, mark the API as failed
-                        if response.status_code == 401:
-                            self.elevenlabs_failed = True
-                            print("⚠️ ElevenLabs API key is invalid or expired")
-                            print("Will use fallback TTS system")
-                        
-                        return False
+            except Exception as e:
+                print(f"⚠️ Google TTS test failed: {e}")
+                return False
                 
         except Exception as e:
-            print(f"⚠️ Error verifying ElevenLabs API: {e}")
+            print(f"⚠️ Error verifying Google TTS: {e}")
             print("Will use fallback TTS system if needed")
             return False
     
-    def elevenlabs_tts(self, text, voice_id=None):
-        """Generate speech using ElevenLabs TTS API with fallback option"""
-        # If ElevenLabs previously failed with auth error, use fallback immediately
-        if self.elevenlabs_failed:
-            return self.fallback_tts(text)
-        
-        # Use default voice ID if none provided
-        voice_id = voice_id or self.elevenlabs_voice_id
-        
-        if not voice_id:
-            print("ElevenLabs voice ID not set. Cannot generate speech.")
-            return self.fallback_tts(text)
-            
+    def google_tts(self, text, lang=None):
+        """Generate speech using Google Text-to-Speech (gTTS) API"""
         try:
-            print(f"Generating speech with ElevenLabs client for text: {text[:50]}...")
+            print(f"Generating speech with Google TTS for text: {text[:50]}...")
             
-            # DIRECT API REQUEST - Aligned with latest documentation
-            try:
-                import requests
-                
-                # Properly formatted headers according to ElevenLabs docs
-                headers = {
-                    "xi-api-key": self.elevenlabs_api_key,
-                    "Content-Type": "application/json",
-                    "Accept": "audio/mpeg"
-                }
-                
-                # Use the correct endpoint from the documentation for streaming
-                url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
-                
-                # Prepare the request data according to the latest API docs
-                data = {
-                    "text": text,
-                    "model_id": "eleven_turbo_v2_5",  # Using the faster low-latency turbo model
-                    "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.75,
-                        "use_speaker_boost": True,
-                        "speed": 1.0
-                    },
-                    "output_format": "mp3_44100_128"
-                }
-                
-                print("Making direct API request to ElevenLabs using streaming endpoint")
-                response = requests.post(url, json=data, headers=headers, stream=True)
-                
-                if response.status_code == 200:
-                    print("Successfully received audio stream from ElevenLabs API")
-                    
-                    # Collect all chunks from the streaming response
-                    audio_content = bytearray()
-                    for chunk in response.iter_content(chunk_size=1024):
-                        if chunk:
-                            audio_content.extend(chunk)
-                    
-                    audio_content = bytes(audio_content)
-                    
-                    # Verify we actually got audio data
-                    if len(audio_content) > 1000:  # Audio files should be at least 1KB
-                        print(f"✅ Received {len(audio_content)} bytes of audio data")
-                        return audio_content
-                    else:
-                        print(f"⚠️ Warning: Received suspiciously small audio ({len(audio_content)} bytes)")
-                        # Continue to try other methods
-                else:
-                    print(f"⚠️ ElevenLabs API error: Status {response.status_code}")
-                    print(f"Response: {response.text}")
-                    
-                    # If we get a 401 error, try the non-streaming endpoint as fallback
-                    if response.status_code == 401:
-                        print("Trying non-streaming endpoint as fallback...")
-                        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-                        response = requests.post(url, json=data, headers=headers)
-                        
-                        if response.status_code == 200:
-                            print("✅ Successfully received audio from non-streaming endpoint")
-                            audio_content = response.content
-                            if len(audio_content) > 1000:
-                                return audio_content
-            except Exception as e:
-                print(f"⚠️ Direct API request failed: {e}")
-                print("Trying client library instead...")
+            # Use provided language or default to the one set in initialization
+            lang = lang or self.tts_language
             
-            # FALLBACK METHOD 1: Using the official ElevenLabs Python client
-            try:
-                print("Trying with official ElevenLabs Python client...")
-                from elevenlabs import generate, set_api_key
-                
-                # Set the API key for the official client
-                set_api_key(self.elevenlabs_api_key)
-                
-                # Generate audio using the official client with updated model
-                audio_data = generate(
-                    text=text,
-                    voice=voice_id,
-                    model="eleven_turbo_v2_5"
-                )
-                
-                if audio_data and len(audio_data) > 1000:
-                    print("✅ Successfully generated speech with official ElevenLabs client")
-                    return audio_data
-                else:
-                    print("⚠️ Official client returned no audio data")
-            except ImportError:
-                print("Official elevenlabs package not available, trying alternative client")
-            except Exception as e:
-                print(f"⚠️ Error with official client: {e}")
+            # Create a temporary file for the audio
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                temp_file_path = temp_file.name
             
-            # FALLBACK METHOD 2: Using the ElevenLabs client from the import
-            try:
-                print("Trying with ElevenLabs client...")
-                client = ElevenLabs(api_key=self.elevenlabs_api_key)
+            # Create gTTS object with the text
+            tts = gTTS(text=text, lang=lang, slow=self.tts_slow)
+            
+            # Save to the temporary file
+            tts.save(temp_file_path)
+            
+            # Read the file back as bytes
+            with open(temp_file_path, 'rb') as f:
+                audio_data = f.read()
+            
+            # Verify we actually got audio data
+            if len(audio_data) > 1000:  # Audio files should be at least 1KB
+                print(f"✅ Received {len(audio_data)} bytes of audio data from Google TTS")
                 
-                # Try the text_to_speech.convert method (aligned with latest documentation)
+                # Clean up the temporary file since we've read it into memory
                 try:
-                    print("Trying text_to_speech.convert method...")
-                    audio_data = client.text_to_speech.convert(
-                        text=text,
-                        voice_id=voice_id,
-                        model_id="eleven_multilingual_v2",
-                        output_format="mp3_44100_128",
-                        voice_settings={
-                            "stability": 0.5,
-                            "similarity_boost": 0.75,
-                            "use_speaker_boost": True,
-                            "speed": 1.0
-                        }
-                    )
+                    os.unlink(temp_file_path)
+                except:
+                    pass
                     
-                    # Convert the generator to bytes
-                    audio_chunks = bytearray()
-                    
-                    # Handle as a generator (per latest documentation)
-                    for chunk in audio_data:
-                        if chunk:
-                            audio_chunks.extend(chunk if isinstance(chunk, bytes) else bytes(chunk))
-                    
-                    # Convert to bytes
-                    audio_content = bytes(audio_chunks)
-                    
-                    if len(audio_content) > 1000:
-                        print(f"✅ Successfully generated {len(audio_content)} bytes of audio with convert method")
-                        return audio_content
-                except Exception as e:
-                    print(f"⚠️ Convert method failed: {e}")
-                
-                # Try streaming method as alternative
-                try:
-                    print("Trying text_to_speech.stream method...")
-                    audio_stream = client.text_to_speech.stream(
-                        text=text,
-                        voice_id=voice_id,
-                        model_id="eleven_multilingual_v2",
-                        output_format="mp3_44100_128"
-                    )
-                    
-                    # Convert the stream to bytes
-                    audio_chunks = bytearray()
-                    
-                    # Process the stream
-                    for chunk in audio_stream:
-                        if isinstance(chunk, bytes):
-                            audio_chunks.extend(chunk)
-                        elif chunk:
-                            audio_chunks.extend(bytes(chunk))
-                    
-                    audio_content = bytes(audio_chunks)
-                    
-                    if len(audio_content) > 1000:
-                        print(f"✅ Successfully generated {len(audio_content)} bytes of audio with stream method")
-                        return audio_content
-                    else:
-                        print(f"⚠️ Generated audio too small: {len(audio_content)} bytes")
-                except Exception as e:
-                    print(f"⚠️ Stream method failed: {e}")
-            except Exception as e:
-                print(f"⚠️ ElevenLabs client error: {e}")
-            
-            # If we got here, all ElevenLabs methods failed
-            print("⚠️ All ElevenLabs methods failed, using fallback TTS")
-            self.elevenlabs_failed = True
-            return self.fallback_tts(text)
+                return audio_data
+            else:
+                print(f"⚠️ Warning: Received suspiciously small audio ({len(audio_data)} bytes)")
+                # Use fallback if the audio is too small
+                return self.fallback_tts(text)
                 
         except Exception as e:
-            error_str = str(e)
-            print(f"⚠️ Exception generating speech with ElevenLabs: {e}")
-            
-            # Check if this is a permissions or authentication issue
-            if ("401" in error_str or 
-                "status_code: 401" in error_str or 
-                "missing_permissions" in error_str or 
-                "Unauthorized" in error_str or
-                "detected_unusual_activity" in error_str or
-                "text_to_speech" in error_str):
-                
-                print("\n⚠️ ElevenLabs API authentication issue detected.")
-                print("This could be due to an invalid API key or account limitations.")
-                print("Switching to fallback TTS system for the rest of this session.")
-                
-                # Mark ElevenLabs as failed to avoid repeated attempts
-                self.elevenlabs_failed = True
-            
+            print(f"⚠️ Exception generating speech with Google TTS: {e}")
             # For all errors, use fallback
             return self.fallback_tts(text)
     
     def fallback_tts(self, text):
-        """Fallback TTS system using pyttsx3 when ElevenLabs is not available"""
+        """Fallback TTS system using pyttsx3 when Google TTS is not available"""
         try:
             if not self.has_fallback_tts or self.tts_engine is None:
                 # Try to initialize pyttsx3 again
