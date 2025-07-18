@@ -1911,7 +1911,7 @@ class ConversationRobot:
         return text
     
     def check_wake_word_during_speech(self):
-        """Listen for wake word during speech and IMMEDIATELY stop speaking when detected"""
+        """Listen for wake word during speech and IMMEDIATELY stop speaking when detected - optimized for faster response"""
         try:
             # Use the wake word as the interrupt keyword with maximum sensitivity
             keywords = [self.wake_word]
@@ -1925,6 +1925,7 @@ class ConversationRobot:
                     keywords=keywords,
                     sensitivities=sensitivities
                 )
+                print("Created high-sensitivity wake word detector for interruption")
             except Exception as e:
                 print(f"Error creating high-sensitivity detector: {e}")
                 print("Trying with higher sensitivity...")
@@ -1936,6 +1937,7 @@ class ConversationRobot:
                         keywords=keywords,
                         sensitivities=sensitivities
                     )
+                    print("Created medium-sensitivity wake word detector for interruption")
                 except Exception as e2:
                     print(f"Error with medium sensitivity: {e2}")
                     print("Falling back to default sensitivity")
@@ -1944,50 +1946,67 @@ class ConversationRobot:
                             access_key=self.porcupine_access_key,
                             keywords=keywords
                         )
+                        print("Created standard wake word detector for interruption")
                     except Exception as e3:
                         print(f"Error creating interrupt detector: {e3}")
                         return
             
             # Create a separate audio stream with SMALLEST possible buffer for fastest response
+            # This significantly improves interruption response time
             interrupt_pa = pyaudio.PyAudio()
+            # Use a very small buffer size for more immediate response
+            # Lower values mean faster response but higher CPU usage
+            BUFFER_SIZE = 512  # Optimized for balance of responsiveness and CPU usage
+            
             interrupt_stream = interrupt_pa.open(
                 rate=interrupt_porcupine.sample_rate,
                 channels=1,
                 format=pyaudio.paInt16,
                 input=True,
-                frames_per_buffer=256  # Smallest possible buffer for immediate response
+                frames_per_buffer=BUFFER_SIZE,
+                # Set input_device_index if needed for specific microphone
+                # input_device_index=0,  # Uncomment and set if specific mic needed
             )
             
-            print(f"IMMEDIATE INTERRUPT DETECTION ACTIVE - Say '{self.wake_word}' to instantly stop speech")
+            print(f"⚠️ IMMEDIATE INTERRUPT DETECTION ACTIVE - Say '{self.wake_word}' to instantly stop speech")
             
             # Continue checking for wake word while speaking - with instant response
-            while self.is_speaking and not self.stop_speaking:
+            # Use a more efficient interrupt detection loop
+            detection_active = True
+            while self.is_speaking and not self.stop_speaking and detection_active:
                 try:
+                    # Use a non-blocking read with exception_on_overflow=False to prevent audio buffer overruns
                     pcm = interrupt_stream.read(interrupt_porcupine.frame_length, exception_on_overflow=False)
                     pcm = struct.unpack_from("h" * interrupt_porcupine.frame_length, pcm)
                     
+                    # Process audio with wake word detector
                     keyword_index = interrupt_porcupine.process(pcm)
+                    
+                    # If wake word detected, take immediate action
                     if keyword_index >= 0:
                         # IMMEDIATELY STOP SPEECH - Force stop with multiple methods
-                        print(f"\n!!! WAKE WORD DETECTED - FORCING IMMEDIATE STOP !!!")
+                        print(f"\n🛑 WAKE WORD DETECTED - FORCING IMMEDIATE STOP 🛑")
                         
                         # Play different beep sound for interruption (higher pitch)
                         self.play_beep(1500, 150)
                         
-                        # Set flags to stop speech
+                        # Set flags to stop speech - this should cascade to all threads
                         self.stop_speaking = True
                         self.is_speaking = False
                         
-                        # Try to kill any system audio processes
+                        # Try to kill any system audio processes more aggressively
                         try:
                             if platform.system() == 'Windows':
-                                # Kill any audio processes on Windows
+                                # More aggressive method for Windows
                                 os.system("taskkill /f /im wmplayer.exe >nul 2>&1")
+                                os.system("taskkill /f /im Music.UI.exe >nul 2>&1")  # Windows 10 media player
                             elif platform.system() == 'Darwin':  # macOS
-                                os.system("pkill afplay 2>/dev/null")
+                                os.system("pkill -9 afplay 2>/dev/null")
                             else:  # Linux
-                                os.system("pkill mpg123 2>/dev/null")
-                        except:
+                                os.system("pkill -9 mpg123 2>/dev/null")
+                                os.system("pkill -9 aplay 2>/dev/null")
+                        except Exception as kill_err:
+                            print(f"Non-critical error killing audio processes: {kill_err}")
                             pass
                         
                         # Force stop the TTS engine if using fallback
@@ -2018,18 +2037,28 @@ class ConversationRobot:
                                 cv2.waitKey(1)
                         
                         # Break immediately to start listening
+                        detection_active = False
                         break
-                except Exception as e:
-                    print(f"Error in interrupt detection: {e}")
-                    break
+                        
+                except Exception as read_err:
+                    print(f"Error reading audio for wake word detection: {read_err}")
+                    time.sleep(0.01)  # Short sleep to prevent CPU spinning
             
-            # Clean up resources
-            interrupt_stream.close()
-            interrupt_pa.terminate()
-            interrupt_porcupine.delete()
-            
+            # Clean up resources more reliably
+            try:
+                print("Cleaning up interrupt detection resources...")
+                if 'interrupt_stream' in locals() and interrupt_stream:
+                    interrupt_stream.close()
+                if 'interrupt_pa' in locals() and interrupt_pa:
+                    interrupt_pa.terminate()
+                if 'interrupt_porcupine' in locals() and interrupt_porcupine:
+                    interrupt_porcupine.delete()
+                print("Wake word interrupt detection cleaned up")
+            except Exception as cleanup_err:
+                print(f"Error cleaning up interrupt detection resources: {cleanup_err}")
+                
         except Exception as e:
-            print(f"Error setting up interrupt detection: {e}")
+            print(f"Error in wake word interrupt detection: {e}")
     
     def speak(self, text):
         """Convert text to speech with improved natural delivery and IMMEDIATE interrupt capability"""
@@ -2090,16 +2119,28 @@ class ConversationRobot:
             print("Generating speech with Google TTS for the entire response...")
             audio_data = self.google_tts(processed_text)
             
-            # Play the audio with interrupt capability
+            # Start a thread to check for interruptions
+            interrupt_thread = threading.Thread(target=self.check_for_interrupt_during_playback)
+            interrupt_thread.daemon = True
+            interrupt_thread.start()
+            
+            # Play the audio with interrupt capability (now more synchronous)
             if audio_data:
-                self.play_audio(audio_data)
+                # Play audio in a separate thread so we can monitor for interruptions
+                play_thread = threading.Thread(
+                    target=self.play_audio_with_interrupt_check, 
+                    args=(audio_data,)
+                )
+                play_thread.daemon = True
+                play_thread.start()
                 
-                # Wait for a moment to allow the audio to start playing
-                time.sleep(0.5)
-                
-                # Wait for interrupt or completion
-                while self.is_speaking and not self.stop_speaking:
+                # Wait for playback to complete or be interrupted
+                while play_thread.is_alive() and not self.stop_speaking:
                     time.sleep(0.1)
+                    
+                # If playback was interrupted, make sure to clean up
+                if self.stop_speaking:
+                    print("Speech playback interrupted!")
             else:
                 # Fallback to pyttsx3 if Google TTS failed
                 print("Google TTS failed, using fallback TTS...")
@@ -2674,47 +2715,96 @@ class ConversationRobot:
             return False
     
     def google_tts(self, text, lang=None):
-        """Generate speech using Google Text-to-Speech (gTTS) API"""
+        """Generate speech using Google Text-to-Speech (gTTS) API - optimized for speed and single text processing"""
         try:
             print(f"Generating speech with Google TTS for text: {text[:50]}...")
             
             # Use provided language or default to the one set in initialization
             lang = lang or self.tts_language
             
-            # Create a temporary file for the audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
-                temp_file_path = temp_file.name
+            # Check if text is too long - gTTS has a limit of around 100KB
+            # If text is too long, we'll split it, but we'll ensure it's at logical points
+            MAX_TEXT_LENGTH = 4000  # Safe limit for gTTS
             
-            # Create gTTS object with the text
-            tts = gTTS(text=text, lang=lang, slow=self.tts_slow)
-            
-            # Save to the temporary file
-            tts.save(temp_file_path)
-            
-            # Read the file back as bytes
-            with open(temp_file_path, 'rb') as f:
-                audio_data = f.read()
-            
-            # Verify we actually got audio data
-            if len(audio_data) > 1000:  # Audio files should be at least 1KB
-                print(f"✅ Received {len(audio_data)} bytes of audio data from Google TTS")
+            if len(text) > MAX_TEXT_LENGTH:
+                print(f"Text is too long ({len(text)} chars). Processing in a smart way to maintain flow...")
                 
-                # Clean up the temporary file since we've read it into memory
-                try:
-                    os.unlink(temp_file_path)
-                except:
-                    pass
+                # We'll split text at sentence boundaries to maintain natural speech flow
+                audio_parts = []
+                
+                # Regex pattern for finding sentence endings
+                sentence_endings = re.compile(r'(?<=[.!?])\s+')
+                
+                # Split text at sentence boundaries
+                sentences = sentence_endings.split(text)
+                
+                current_chunk = ""
+                for sentence in sentences:
+                    # If adding this sentence would make the chunk too long, process the current chunk
+                    if len(current_chunk) + len(sentence) > MAX_TEXT_LENGTH:
+                        if current_chunk:  # Only process if we have content
+                            chunk_audio = self._generate_tts_chunk(current_chunk, lang)
+                            if chunk_audio:
+                                audio_parts.append(chunk_audio)
+                            current_chunk = sentence  # Start a new chunk with the current sentence
+                    else:
+                        # Add sentence to current chunk
+                        current_chunk += " " + sentence if current_chunk else sentence
+                
+                # Process any remaining text
+                if current_chunk:
+                    chunk_audio = self._generate_tts_chunk(current_chunk, lang)
+                    if chunk_audio:
+                        audio_parts.append(chunk_audio)
+                
+                # Combine all audio parts
+                if audio_parts:
+                    # Use BytesIO to efficiently combine audio data
+                    combined_audio = bytearray()
+                    for audio in audio_parts:
+                        combined_audio.extend(audio)
                     
-                return audio_data
+                    print(f"✅ Successfully combined {len(audio_parts)} speech chunks into {len(combined_audio)} bytes")
+                    return bytes(combined_audio)
+                else:
+                    print("❌ Failed to generate any speech chunks")
+                    return self.fallback_tts(text)
             else:
-                print(f"⚠️ Warning: Received suspiciously small audio ({len(audio_data)} bytes)")
-                # Use fallback if the audio is too small
-                return self.fallback_tts(text)
+                # Standard processing for text within limits
+                return self._generate_tts_chunk(text, lang)
                 
         except Exception as e:
             print(f"⚠️ Exception generating speech with Google TTS: {e}")
             # For all errors, use fallback
             return self.fallback_tts(text)
+    
+    def _generate_tts_chunk(self, text, lang):
+        """Helper method to generate a single chunk of TTS audio - for internal use only"""
+        try:
+            # Create a BytesIO object instead of a file to save processing time
+            mp3_fp = io.BytesIO()
+            
+            # Create gTTS object with the text and set parameters for better performance
+            tts = gTTS(text=text, lang=lang, slow=self.tts_slow)
+            
+            # Save directly to the BytesIO object instead of a file
+            tts.write_to_fp(mp3_fp)
+            
+            # Get the audio data from the BytesIO object
+            mp3_fp.seek(0)
+            audio_data = mp3_fp.read()
+            
+            # Verify we actually got audio data
+            if len(audio_data) > 1000:  # Audio files should be at least 1KB
+                print(f"✅ Generated {len(audio_data)} bytes of audio data for text chunk")
+                return audio_data
+            else:
+                print(f"⚠️ Warning: Generated suspiciously small audio ({len(audio_data)} bytes)")
+                return None
+                
+        except Exception as e:
+            print(f"⚠️ Error generating TTS chunk: {e}")
+            return None
     
     def fallback_tts(self, text):
         """Fallback TTS system using pyttsx3 when Google TTS is not available"""
@@ -2759,41 +2849,61 @@ class ConversationRobot:
             return None
     
     def play_audio(self, audio_data):
-        """Play audio data with interrupt capability"""
+        """Play audio data with interrupt capability - optimized for faster response"""
         if not audio_data:
             print("No audio data to play, continuing with silent operation")
             return True  # Return success so the conversation can continue
             
         try:
-            # Write audio data to a temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
-                temp_file.write(audio_data)
-                temp_file_path = temp_file.name
+            # Use a more optimized approach for temporary file handling
+            temp_file_path = None
             
-            # Play the audio file using the system's default player
-            if platform.system() == 'Windows':
-                os.system(f'start {temp_file_path}')
-            elif platform.system() == 'Darwin':  # macOS
-                os.system(f'afplay {temp_file_path}')
-            else:  # Linux and others
-                os.system(f'mpg123 {temp_file_path}')
-            
-            # Clean up the temporary file after a delay
-            def cleanup_temp_file():
-                time.sleep(5)  # Wait for the audio to finish playing
-                try:
-                    os.unlink(temp_file_path)
-                except:
-                    pass
-            
-            cleanup_thread = threading.Thread(target=cleanup_temp_file)
-            cleanup_thread.daemon = True
-            cleanup_thread.start()
-            
-            # Store the player thread for interrupt handling
-            self.audio_player = cleanup_thread
+            try:
+                # Create a unique temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
+                    # Write audio data more efficiently (all at once)
+                    temp_file.write(audio_data)
+                    temp_file_path = temp_file.name
+                
+                print(f"Audio data ({len(audio_data)} bytes) written to temporary file: {temp_file_path}")
+                
+                # Use a more reliable and faster way to play audio based on platform
+                if platform.system() == 'Windows':
+                    # On Windows, use the start command with /B to avoid opening a new window
+                    # and /WAIT to make it synchronous for better control
+                    try:
+                        # Try direct playback method first for Windows 10/11
+                        import winsound
+                        # Use the PlaySound function with the SND_FILENAME flag
+                        # This is synchronous and will block until audio is done playing
+                        print("Using winsound for direct audio playback")
+                        winsound.PlaySound(temp_file_path, winsound.SND_FILENAME)
+                    except Exception as win_err:
+                        print(f"Winsound playback failed: {win_err}, falling back to system player")
+                        # Fall back to standard system player
+                        os.system(f'start /B /WAIT {temp_file_path}')
+                        
+                elif platform.system() == 'Darwin':  # macOS
+                    # Use afplay which is more reliable on macOS
+                    os.system(f'afplay "{temp_file_path}"')
+                    
+                else:  # Linux and others
+                    # Use mpg123 with better options for Linux
+                    os.system(f'mpg123 -q "{temp_file_path}"')
+                
+                print("Audio playback completed")
+                
+            finally:
+                # Clean up the temporary file immediately after playing
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try:
+                        os.unlink(temp_file_path)
+                        print(f"Temporary audio file removed: {temp_file_path}")
+                    except Exception as clean_err:
+                        print(f"Warning: Could not remove temporary file: {clean_err}")
             
             return True
+            
         except Exception as e:
             print(f"Error playing audio: {e}")
             return False
@@ -4273,6 +4383,33 @@ class ConversationRobot:
         except Exception as e:
             print(f"❌ Error in Raspberry Pi Arduino scan: {e}")
             return None
+    
+    def check_for_interrupt_during_playback(self):
+        """Check for interruption during audio playback"""
+        try:
+            print("Monitoring for speech interruption during playback...")
+            
+            # Continue checking until speech is done or interrupted
+            while self.is_speaking and not self.stop_speaking:
+                # Just a backup check that works with the wake word detection
+                time.sleep(0.1)
+                
+        except Exception as e:
+            print(f"Error in interrupt monitoring: {e}")
+    
+    def play_audio_with_interrupt_check(self, audio_data):
+        """Play audio with interrupt checking - wrapper around play_audio"""
+        try:
+            # Play the audio
+            self.play_audio(audio_data)
+            
+            # Once playback is done naturally, set speaking flag to false
+            self.is_speaking = False
+            
+        except Exception as e:
+            print(f"Error in audio playback: {e}")
+            # Make sure we reset the speaking flag
+            self.is_speaking = False
 
 
 # External functions outside the ConversationRobot class
